@@ -6,10 +6,10 @@
 #include <algorithm>
 #include "errors.h"
 
-#define MAX_DEG 32
+#define MAX_DEG 512
 #define MAX_STACK MAX_DEG * MAX_DEG
 
-#define BLOCK_SIZE 32
+#define BLOCK_SIZE 16
 #define NUM_BLOCKS 32
 
 std::vector<std::pair<int, int>> edges;
@@ -19,10 +19,10 @@ std::map<int, int> id_to_number;
 std::map<int, int> number_to_id;
 
 
-__global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* intervals, int N, bool* intersect, int* stackVertex, int* stackDepth, int* cliques, int K) {
+__global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* intervals, int N, unsigned int* intersect, int* stackVertex, int* stackDepth, int* cliques, int K) {
     // TODO: Zakodować binarnie i zwiększyć MAX_DEG
-    __shared__ bool inducedSubgraph[MAX_DEG][MAX_DEG];
-    __shared__ int neighbours[MAX_DEG];
+    __shared__ unsigned int inducedSubgraph[MAX_DEG * MAX_DEG / 32];
+    // __shared__ int neighbours[MAX_DEG];
 
     __shared__ int stackTop;
 
@@ -40,28 +40,35 @@ __global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* interv
         int graphPart = graphSize / blockDim.x;
         int graphRest = graphSize % blockDim.x;
 
-        // if (threadIdx.x == 0) {
-        //     printf("v = %d graphSize = %d\n", v, graphSize);
-        // }
-
         // Maksymalna różnica liczby przetwarzanych sąsiadów v między wątkami wynosi 1
         // TODO: Być może lepiej, żeby ostatni wątek robił mniej
         int firstNeighbourIncl = threadIdx.x * graphPart + min(threadIdx.x, graphRest);
         int lastNeighbourExcl = (threadIdx.x + 1) * graphPart + min(threadIdx.x + 1, graphRest);
 
-        for (int i = firstNeighbourIncl; i < lastNeighbourExcl; ++i) {
-            neighbours[i] = edges[i + intervals[v].first].second;
-        }
+        int codeSize = (graphSize + 31) / 32; // Na tylu liczbach kodujemy wiersz macierzy sąsiedztwa;
+        int codePart = codeSize / blockDim.x;
+        int codeRest = codeSize % blockDim.x;
+
+        int firstIntersectionIncl = threadIdx.x * codePart + min(threadIdx.x, codeRest);
+        int lastIntersectionExcl = (threadIdx.x + 1) * codePart + min(threadIdx.x + 1, codeRest);
+
+        // if (threadIdx.x == 0) {
+        //     printf("v = %d graphSize = %d\n", v, graphSize);
+        // }
+
+        // for (int i = firstNeighbourIncl; i < lastNeighbourExcl; ++i) {
+        //     neighbours[i] = edges[i + intervals[v].first].second;
+        // }
 
         __syncthreads();
 
         for (int i = firstNeighbourIncl; i < lastNeighbourExcl; ++i) {
-            int u = neighbours[i]; // Kopiujemy listę sąsiedztwa tego sąsiada
+            int u = edges[i + intervals[v].first].second; // Kopiujemy listę sąsiedztwa tego sąsiada
             // i = numer odpowiadający u w indukowanym podgrafie
 
-            // Czyścimy pamięć shared
-            for (int j = 0; j < graphSize; ++j) {
-                inducedSubgraph[i][j] = false;
+            // Czyścimy wiersz odpowiadający u w inducedSubgraph
+            for (int j = 0; j < codeSize; ++j) {
+                inducedSubgraph[i * (MAX_DEG / 32) + j] = 0;
             }
 
             for (int j = intervals[u].first; j < intervals[u].second; j++) {
@@ -70,25 +77,30 @@ __global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* interv
                 int left = 0, right = graphSize - 1, mid;
                 while (left < right) {
                     mid = (left + right) / 2;
-                    if (neighbours[mid] < w) {
+                    if (edges[mid + intervals[v].first].second < w) {
                         left = mid + 1;
                     }
                     else {
                         right = mid;
                     }
                 }
-                if (neighbours[left] == w) {
+                if (edges[left + intervals[v].first].second == w) {
                     // left = numer odpowiadający w w indukowanym podgrafie
-                    inducedSubgraph[i][left] = true;
+                    int number = left / 32;
+                    int bit = left % 32;
+                    inducedSubgraph[i * (MAX_DEG / 32) + number] |= (1 << bit);
                 }
             }
         }
 
         for (int i = firstNeighbourIncl; i < lastNeighbourExcl; ++i) {
-            // intersect[0][i] = true;
-            intersect[blockIdx.x * MAX_STACK + 0 * MAX_DEG + i] = true;
             stackVertex[blockIdx.x * MAX_STACK + i] = i;
             stackDepth[blockIdx.x * MAX_STACK + i] = 1;
+        }
+
+        // Więcej jednynek niż graphSize. Czy to nie przeszkadza?
+        for (int i = firstIntersectionIncl; i < lastIntersectionExcl; ++i) {
+            intersect[blockIdx.x * MAX_DEG * (MAX_DEG / 32) + 0 * (MAX_DEG / 32) + i] = ~0;
         }
 
         if (threadIdx.x == blockDim.x - 1) {
@@ -102,8 +114,10 @@ __global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* interv
         // if (threadIdx.x == 0 && blockIdx.x == 0) {
         //     printf("subgaph induced by %d\n", v);
         //     for (int i = 0; i < graphSize; i++) {
-        //         for (int j = 0; j < graphSize; j++) {
-        //             printf("%d ", inducedSubgraph[i][j]);
+        //         for (int number = 0; number < codeSize; number++) {
+        //             for (int bit = 0; bit < 32 && number * 32 + bit < graphSize; bit++) {
+        //                 printf("%d ", (inducedSubgraph[i][number] >> bit) & 1);
+        //             }
         //         }
         //         printf("\n");
         //     }            
@@ -127,9 +141,11 @@ __global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* interv
             // }
 
             int children = 0;
-            for (int i = firstNeighbourIncl; i < lastNeighbourExcl; ++i) {
-                intersect[blockIdx.x * MAX_STACK + depth * MAX_DEG + i] = intersect[blockIdx.x * MAX_STACK + (depth - 1) * MAX_DEG + i]  && inducedSubgraph[u][i];
-                children += (int)(intersect[blockIdx.x * MAX_STACK + depth * MAX_DEG + i]);
+            for (int i = firstIntersectionIncl; i < lastIntersectionExcl; ++i) {
+                intersect[blockIdx.x * MAX_DEG * (MAX_DEG / 32) + depth * (MAX_DEG / 32) + i] = intersect[blockIdx.x * MAX_DEG * (MAX_DEG / 32) + (depth - 1) * (MAX_DEG / 32) + i] & inducedSubgraph[u * (MAX_DEG / 32) + i];
+                for (int bit = 0; bit < 32; bit++) {
+                    children += ((intersect[blockIdx.x * MAX_DEG * (MAX_DEG / 32) + depth * (MAX_DEG / 32) + i] >> bit) & 1);
+                }
             }
 
             pref[threadIdx.x] = children;
@@ -142,11 +158,13 @@ __global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* interv
 
             if (depth + 1 < K - 1) {
                 int pos = stackTop + pref[threadIdx.x] - children;
-                for (int i = firstNeighbourIncl; i < lastNeighbourExcl; ++i) {
-                    if (intersect[blockIdx.x * MAX_STACK + depth * MAX_DEG + i]) {
-                        stackVertex[blockIdx.x * MAX_STACK + pos] = i;
-                        stackDepth[blockIdx.x * MAX_STACK + pos] = depth + 1;
-                        pos++;
+                for (int i = firstIntersectionIncl; i < lastIntersectionExcl; ++i) {
+                    for (int bit = 0; bit < 32; bit++) {
+                        if ((intersect[blockIdx.x * MAX_DEG * (MAX_DEG / 32) + depth * (MAX_DEG / 32) + i] >> bit) & 1 == 1) {
+                            stackVertex[blockIdx.x * MAX_STACK + pos] = i * 32 + bit;
+                            stackDepth[blockIdx.x * MAX_STACK + pos] = depth + 1;
+                            pos++;
+                        }
                     }
                 }            
             }
@@ -167,9 +185,16 @@ __global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* interv
 
 int main(int argc, char* argv[]) {
 
+    cudaFuncSetCacheConfig(kcliques, cudaFuncCachePreferShared);
+
+    if (MAX_DEG % 32 != 0) {
+        std::cerr << "MAX_DEG must be a multiple of 32";
+        return 1;
+    }
+
     if (argc != 4) {
         std::cerr << "Usage: ./kcliques <graph input file> <k value> <output file>\n";
-        return 0;
+        return 1;
     }
 
     int K;
@@ -178,7 +203,7 @@ int main(int argc, char* argv[]) {
     }
     catch(std::exception) {
         std::cerr << "Usage: ./kcliques <graph input file> <k value> <output file>\n";
-        return 0;        
+        return 1;
     }
 
     std::ifstream input (argv[1]);
@@ -246,7 +271,7 @@ int main(int argc, char* argv[]) {
     for (int i = 1; i < edges.size(); ++i) {
         if (edges[i - 1] == edges[i]) {
             std::cerr << "Error: each edge should appear at most once in the list\n";
-            return 0;
+            return 1;
         }
     }    
 
@@ -277,10 +302,10 @@ int main(int argc, char* argv[]) {
     HANDLE_ERROR(cudaMemcpy(devEdges, &edges.front(), sizeof(std::pair<int, int>) * edges.size(), cudaMemcpyHostToDevice));
     HANDLE_ERROR(cudaMemcpy(devIntervals, &intervals.front(), sizeof(std::pair<int, int>) * intervals.size(), cudaMemcpyHostToDevice));
   
-    bool* devIntersect;
+    unsigned int* devIntersect;
     int* devStackVertex;
     int* devStackDepth;
-    HANDLE_ERROR(cudaMalloc((void**)&devIntersect, sizeof(bool) * MAX_DEG * MAX_DEG * NUM_BLOCKS));
+    HANDLE_ERROR(cudaMalloc((void**)&devIntersect, sizeof(unsigned int) * NUM_BLOCKS * MAX_DEG * (MAX_DEG / 32)));
     HANDLE_ERROR(cudaMalloc((void**)&devStackVertex, sizeof(int) * MAX_STACK * NUM_BLOCKS));
     HANDLE_ERROR(cudaMalloc((void**)&devStackDepth, sizeof(int) * MAX_STACK * NUM_BLOCKS));
 
