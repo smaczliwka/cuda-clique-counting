@@ -6,11 +6,11 @@
 #include <algorithm>
 #include "errors.h"
 
-#define MAX_DEG 32
+#define MAX_DEG 1024
 #define MAX_STACK MAX_DEG * MAX_DEG
 
-#define BLOCK_SIZE 32
-#define NUM_BLOCKS 32
+#define BLOCK_SIZE 64
+#define NUM_BLOCKS 16
 
 std::vector<std::pair<int, int>> edges;
 std::map<int, int> degree;
@@ -19,9 +19,9 @@ std::map<int, int> id_to_number;
 std::map<int, int> number_to_id;
 
 
-__global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* intervals, int N, bool* intersect, int* stackVertex, int* stackDepth, int* cliques, int K) {
+__global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* intervals, int N, bool* intersect, int* stackVertex, int* stackDepth, int* cliques, int K, bool* inducedSubgraph) {
     // TODO: Zakodować binarnie i zwiększyć MAX_DEG
-    __shared__ bool inducedSubgraph[MAX_DEG][MAX_DEG];
+    //__shared__ bool inducedSubgraph[MAX_DEG][MAX_DEG];
     __shared__ int neighbours[MAX_DEG];
 
     __shared__ int stackTop;
@@ -61,7 +61,7 @@ __global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* interv
 
             // Czyścimy pamięć shared
             for (int j = 0; j < graphSize; ++j) {
-                inducedSubgraph[i][j] = false;
+                inducedSubgraph[blockIdx.x * MAX_DEG * MAX_DEG + i * MAX_DEG + j] = false;
             }
 
             for (int j = intervals[u].first; j < intervals[u].second; j++) {
@@ -79,7 +79,7 @@ __global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* interv
                 }
                 if (neighbours[left] == w) {
                     // left = numer odpowiadający w w indukowanym podgrafie
-                    inducedSubgraph[i][left] = true;
+                    inducedSubgraph[blockIdx.x * MAX_DEG * MAX_DEG + i * MAX_DEG + left] = true;
                 }
             }
         }
@@ -128,7 +128,7 @@ __global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* interv
 
             int children = 0;
             for (int i = firstNeighbourIncl; i < lastNeighbourExcl; ++i) {
-                intersect[blockIdx.x * MAX_STACK + depth * MAX_DEG + i] = intersect[blockIdx.x * MAX_STACK + (depth - 1) * MAX_DEG + i]  && inducedSubgraph[u][i];
+                intersect[blockIdx.x * MAX_STACK + depth * MAX_DEG + i] = intersect[blockIdx.x * MAX_STACK + (depth - 1) * MAX_DEG + i]  && inducedSubgraph[blockIdx.x * MAX_DEG * MAX_DEG + u * MAX_DEG + i];
                 children += (int)(intersect[blockIdx.x * MAX_STACK + depth * MAX_DEG + i]);
             }
 
@@ -293,7 +293,10 @@ int main(int argc, char* argv[]) {
     HANDLE_ERROR(cudaMalloc((void**)&devCliques, sizeof(int) * NUM_BLOCKS * K));
     HANDLE_ERROR(cudaMemcpy(devCliques, cliques, sizeof(int) * NUM_BLOCKS * K, cudaMemcpyHostToDevice));
 
-    kcliques<<<NUM_BLOCKS, BLOCK_SIZE>>>(devEdges, devIntervals, N, devIntersect, devStackVertex, devStackDepth, devCliques, K);
+    bool* devInducedSubrgaph;
+    HANDLE_ERROR(cudaMalloc((void**)&devInducedSubrgaph, sizeof(bool) * NUM_BLOCKS * MAX_DEG * MAX_DEG));
+
+    kcliques<<<NUM_BLOCKS, BLOCK_SIZE>>>(devEdges, devIntervals, N, devIntersect, devStackVertex, devStackDepth, devCliques, K, devInducedSubrgaph);
 
     HANDLE_ERROR(cudaMemcpy(cliques, devCliques, sizeof(int) * NUM_BLOCKS * K, cudaMemcpyDeviceToHost));
 
@@ -312,7 +315,8 @@ int main(int argc, char* argv[]) {
                 sum += cliques[i * NUM_BLOCKS + j];
                 // std::cout << cliques[i * NUM_BLOCKS + j] << " ";
             }
-            output << sum << " ";
+            output << sum;
+            if (i < K - 1) output << " ";
         }
         output.close();
     }
