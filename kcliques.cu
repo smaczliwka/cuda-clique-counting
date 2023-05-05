@@ -106,7 +106,7 @@ __global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* interv
         //             printf("%d ", inducedSubgraph[i][j]);
         //         }
         //         printf("\n");
-        //     }            
+        //     }
         // }
 
         while(true) {
@@ -148,7 +148,7 @@ __global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* interv
                         stackDepth[blockIdx.x * MAX_STACK + pos] = depth + 1;
                         pos++;
                     }
-                }            
+                }
             }
 
             // teraz pos = stackTop + pref[threadId.x]
@@ -159,7 +159,7 @@ __global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* interv
                 stackTop = (depth + 1 < K - 1 ? stackTop + pref[threadIdx.x] - 1 : stackTop - 1);
             }
 
-            __syncthreads();            
+            __syncthreads();
         }
 
     }
@@ -178,7 +178,7 @@ int main(int argc, char* argv[]) {
     }
     catch(std::exception) {
         std::cerr << "Usage: ./kcliques <graph input file> <k value> <output file>\n";
-        return 0;        
+        return 0;
     }
 
     std::ifstream input (argv[1]);
@@ -195,7 +195,7 @@ int main(int argc, char* argv[]) {
                 if (a != b) { // Ignorujemy pętle
                     edges.push_back({a, b});
                     degree[a]++;
-                    degree[b]++;                       
+                    degree[b]++;
                 }
             }
             catch(std::exception) {
@@ -269,6 +269,13 @@ int main(int argc, char* argv[]) {
     //     std::cout << i << " {"<<intervals[i].first << ", " << intervals[i].second << "}\n";
     // }
 
+    int cliques[NUM_BLOCKS * K];
+
+    cudaEvent_t start, stop;
+	HANDLE_ERROR(cudaEventCreate(&start));
+	HANDLE_ERROR(cudaEventCreate(&stop));
+	HANDLE_ERROR(cudaEventRecord(start, 0));
+
     std::pair<int, int>* devEdges;
     std::pair<int, int>* devIntervals;
     HANDLE_ERROR(cudaMalloc((void**)&devEdges, sizeof(std::pair<int, int>) * edges.size()));
@@ -276,7 +283,7 @@ int main(int argc, char* argv[]) {
 
     HANDLE_ERROR(cudaMemcpy(devEdges, &edges.front(), sizeof(std::pair<int, int>) * edges.size(), cudaMemcpyHostToDevice));
     HANDLE_ERROR(cudaMemcpy(devIntervals, &intervals.front(), sizeof(std::pair<int, int>) * intervals.size(), cudaMemcpyHostToDevice));
-  
+
     bool* devIntersect;
     int* devStackVertex;
     int* devStackDepth;
@@ -284,19 +291,25 @@ int main(int argc, char* argv[]) {
     HANDLE_ERROR(cudaMalloc((void**)&devStackVertex, sizeof(int) * MAX_STACK * NUM_BLOCKS));
     HANDLE_ERROR(cudaMalloc((void**)&devStackDepth, sizeof(int) * MAX_STACK * NUM_BLOCKS));
 
-    int cliques[NUM_BLOCKS * K];
-    for (int i = 0; i < NUM_BLOCKS * K; i++) {
-        cliques[i] = 0;
-    }
-
     int* devCliques;
     HANDLE_ERROR(cudaMalloc((void**)&devCliques, sizeof(int) * NUM_BLOCKS * K));
-    HANDLE_ERROR(cudaMemcpy(devCliques, cliques, sizeof(int) * NUM_BLOCKS * K, cudaMemcpyHostToDevice));
+    HANDLE_ERROR(cudaMemset(devCliques, 0, sizeof(int) * NUM_BLOCKS * K));
+    // HANDLE_ERROR(cudaMemcpy(devCliques, cliques, sizeof(int) * NUM_BLOCKS * K, cudaMemcpyHostToDevice));
 
     bool* devInducedSubrgaph;
     HANDLE_ERROR(cudaMalloc((void**)&devInducedSubrgaph, sizeof(bool) * NUM_BLOCKS * MAX_DEG * MAX_DEG));
 
     kcliques<<<NUM_BLOCKS, BLOCK_SIZE>>>(devEdges, devIntervals, N, devIntersect, devStackVertex, devStackDepth, devCliques, K, devInducedSubrgaph);
+
+    HANDLE_ERROR(cudaEventRecord(stop, 0));
+	HANDLE_ERROR(cudaEventSynchronize(stop));
+
+	float elapsedTime;
+	HANDLE_ERROR(cudaEventElapsedTime(&elapsedTime, start, stop));
+	printf("Total GPU execution time: %3.1f ms\n", elapsedTime);
+
+	HANDLE_ERROR(cudaEventDestroy(start));
+	HANDLE_ERROR(cudaEventDestroy(stop));
 
     HANDLE_ERROR(cudaMemcpy(cliques, devCliques, sizeof(int) * NUM_BLOCKS * K, cudaMemcpyDeviceToHost));
 
