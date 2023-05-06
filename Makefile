@@ -153,7 +153,7 @@ NVCC          := $(CUDA_PATH)/bin/nvcc -ccbin $(HOST_COMPILER)
 # internal flags
 NVCCFLAGS   := -m${TARGET_SIZE}
 CCFLAGS     :=
-LDFLAGS     := 
+LDFLAGS     :=
 
 # build flags
 ifeq ($(TARGET_OS),darwin)
@@ -237,7 +237,7 @@ endif
 # Target rules
 all: build
 
-build: kcliques 
+build: kcliques
 
 check.deps:
 ifeq ($(SAMPLE_ENABLED),0)
@@ -246,13 +246,13 @@ else
 	@echo "Sample is ready - all dependencies have been met"
 endif
 
-kcliques.o: kcliques.cu
+kcliques.o:kcliques.cu
 	$(EXEC) $(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
 
 kcliques: kcliques.o
 	$(EXEC) $(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) -o $@ $+ $(LIBRARIES)
-#	$(EXEC) mkdir -p ../../bin/$(TARGET_ARCH)/$(TARGET_OS)/$(BUILD_TYPE)
-#	$(EXEC) cp $@ ../../bin/$(TARGET_ARCH)/$(TARGET_OS)/$(BUILD_TYPE)
+	$(EXEC) mkdir -p ../../bin/$(TARGET_ARCH)/$(TARGET_OS)/$(BUILD_TYPE)
+	$(EXEC) cp $@ ../../bin/$(TARGET_ARCH)/$(TARGET_OS)/$(BUILD_TYPE)
 
 run: build
 	$(EXEC) ./kcliques
