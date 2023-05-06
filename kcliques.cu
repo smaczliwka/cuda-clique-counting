@@ -13,17 +13,19 @@
 #define BLOCK_SIZE 32
 #define NUM_BLOCKS 512
 
-std::vector<std::pair<int, int>> edges;
-std::map<int, int> degree;
+#define MOD 1000000000
 
-std::map<int, int> id_to_number;
-std::map<int, int> number_to_id;
+std::vector<std::pair<uint, uint>> edges;
+std::map<uint, uint> degree;
+
+std::map<uint, uint> id_to_number;
+std::map<uint, uint> number_to_id;
 
 
-__global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* intervals, int N, unsigned int* intersect, int* stackVertex, int* stackDepth, unsigned long long* cliques, int K, unsigned int* inducedSubgraph) {
+__global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* intervals, int N, unsigned int* intersect, uint* stackVertex, int* stackDepth, int* cliques, int K, unsigned int* inducedSubgraph) {
     // TODO: Zakodować binarnie i zwiększyć MAX_DEG
     // __shared__ unsigned int inducedSubgraph[MAX_DEG * MAX_DEG / 32];
-    // __shared__ int neighbours[MAX_DEG];
+    // __shared__ uint neighbours[MAX_DEG];
 
     __shared__ int stackTop;
 
@@ -64,7 +66,7 @@ __global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* interv
         __syncthreads();
 
         for (int i = firstNeighbourIncl; i < lastNeighbourExcl; ++i) {
-            int u = edges[i + intervals[v].first].second; // Kopiujemy listę sąsiedztwa tego sąsiada
+            uint u = edges[i + intervals[v].first].second; // Kopiujemy listę sąsiedztwa tego sąsiada
             // i = numer odpowiadający u w indukowanym podgrafie
 
             // Czyścimy wiersz odpowiadający u w inducedSubgraph
@@ -73,7 +75,7 @@ __global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* interv
             }
 
             for (int j = intervals[u].first; j < intervals[u].second; j++) {
-                int w = edges[j].second;
+                uint w = edges[j].second;
                 // Sprawdzamy, czy w jest w indukowanym podgrafie
                 int left = 0, right = graphSize - 1, mid;
                 while (left < right) {
@@ -107,7 +109,9 @@ __global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* interv
         if (threadIdx.x == blockDim.x - 1) {
             stackTop = graphSize - 1;
             cliques[0 * NUM_BLOCKS + blockIdx.x]++;
+            cliques[0 * NUM_BLOCKS + blockIdx.x] %= MOD;
             cliques[1 * NUM_BLOCKS + blockIdx.x] += graphSize; // Odpowiada wszystkim tym wrzuconym na stos wierzchołkom
+            cliques[1 * NUM_BLOCKS + blockIdx.x] %= MOD;
         }
 
         __syncthreads();
@@ -135,7 +139,7 @@ __global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* interv
                 break;
             }
 
-            int u = stackVertex[blockIdx.x * MAX_STACK + stackTop];
+            uint u = stackVertex[blockIdx.x * MAX_STACK + stackTop];
             int depth = stackDepth[blockIdx.x * MAX_STACK + stackTop];
             // if (threadIdx.x == 0 && blockIdx.x == 0) {
             //     printf("vertex %d of depth %d\n", u, depth);
@@ -175,6 +179,7 @@ __global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* interv
 
             if (threadIdx.x == blockDim.x - 1) {
                 cliques[(depth + 1) * NUM_BLOCKS + blockIdx.x] += pref[threadIdx.x];
+                cliques[(depth + 1) * NUM_BLOCKS + blockIdx.x] %= MOD;
                 stackTop = (depth + 1 < K - 1 ? stackTop + pref[threadIdx.x] - 1 : stackTop - 1);
             }
 
@@ -214,8 +219,8 @@ int main(int argc, char* argv[]) {
 
         while ( getline (input,line) ) {
             try {
-                int a = std::stoi(line, &idx);
-                int b = std::stoi(&(line[idx]));
+                uint a = std::stoul(line, &idx);
+                uint b = std::stoul(&(line[idx]));
                 if (a != b) { // Ignorujemy pętle
                     edges.push_back({a, b});
                     degree[a]++;
@@ -225,21 +230,21 @@ int main(int argc, char* argv[]) {
             catch(std::exception) {
                 std::cerr << "Error: invalid input data format\n";
                 input.close();
-                return 0;
+                return 1;
             }
         }
         input.close();
     }
     else {
         std::cerr << "Error: unable to open input file\n";
-        return 0;
+        return 1;
     }
 
     int N = degree.size(); // Liczba wierzchołków
 
     // Przenumerowanie id na liczby z przedziału od 0 do N
-    int num = 0;
-    for (std::map<int, int>::iterator it = degree.begin(); it != degree.end(); ++it) {
+    uint num = 0;
+    for (std::map<uint, uint>::iterator it = degree.begin(); it != degree.end(); ++it) {
         id_to_number[it->first] = num;
         number_to_id[num] = it->first;
         num++;
@@ -248,8 +253,8 @@ int main(int argc, char* argv[]) {
     // Skierowanie krawędzi
     // TODO: zrobić to na GPU
     for (int i = 0; i < edges.size(); i++) {
-        int a = edges[i].first;
-        int b = edges[i].second;
+        uint a = edges[i].first;
+        uint b = edges[i].second;
         if (degree[b] > degree[a] || (degree[b] == degree[a] && id_to_number[b] > id_to_number[a])) {
             // graph[id_to_number[a]].push_back(id_to_number[b]);
             edges[i].first = id_to_number[a];
@@ -281,6 +286,10 @@ int main(int argc, char* argv[]) {
         while (r < edges.size() && edges[r].first == edges[l].first) {
             r++;
         }
+        if (r - l > MAX_DEG) {
+            std::cerr << "Error: maximal degree after orienting greater than MAX_DEG\n";
+            return 1;
+        }
         intervals[edges[l].first] = {l, r};
         l = r;
         r = l + 1;
@@ -293,31 +302,31 @@ int main(int argc, char* argv[]) {
     //     std::cout << i << " {"<<intervals[i].first << ", " << intervals[i].second << "}\n";
     // }
 
-    unsigned long long cliques[NUM_BLOCKS * K];
+    int cliques[NUM_BLOCKS * K];
 
     cudaEvent_t start, stop;
 	HANDLE_ERROR(cudaEventCreate(&start));
 	HANDLE_ERROR(cudaEventCreate(&stop));
 	HANDLE_ERROR(cudaEventRecord(start, 0));
 
-    std::pair<int, int>* devEdges;
+    std::pair<uint, uint>* devEdges;
     std::pair<int, int>* devIntervals;
-    HANDLE_ERROR(cudaMalloc((void**)&devEdges, sizeof(std::pair<int, int>) * edges.size()));
+    HANDLE_ERROR(cudaMalloc((void**)&devEdges, sizeof(std::pair<uint, uint>) * edges.size()));
     HANDLE_ERROR(cudaMalloc((void**)&devIntervals, sizeof(std::pair<int, int>) * intervals.size()));
 
-    HANDLE_ERROR(cudaMemcpy(devEdges, &edges.front(), sizeof(std::pair<int, int>) * edges.size(), cudaMemcpyHostToDevice));
+    HANDLE_ERROR(cudaMemcpy(devEdges, &edges.front(), sizeof(std::pair<uint, uint>) * edges.size(), cudaMemcpyHostToDevice));
     HANDLE_ERROR(cudaMemcpy(devIntervals, &intervals.front(), sizeof(std::pair<int, int>) * intervals.size(), cudaMemcpyHostToDevice));
   
     unsigned int* devIntersect;
-    int* devStackVertex;
+    uint* devStackVertex;
     int* devStackDepth;
     HANDLE_ERROR(cudaMalloc((void**)&devIntersect, sizeof(unsigned int) * NUM_BLOCKS * MAX_DEPTH * (MAX_DEG / 32)));
-    HANDLE_ERROR(cudaMalloc((void**)&devStackVertex, sizeof(int) * MAX_STACK * NUM_BLOCKS));
+    HANDLE_ERROR(cudaMalloc((void**)&devStackVertex, sizeof(uint) * MAX_STACK * NUM_BLOCKS));
     HANDLE_ERROR(cudaMalloc((void**)&devStackDepth, sizeof(int) * MAX_STACK * NUM_BLOCKS));
 
-    unsigned long long* devCliques;
-    HANDLE_ERROR(cudaMalloc((void**)&devCliques, sizeof(unsigned long long) * NUM_BLOCKS * K));
-    HANDLE_ERROR(cudaMemset(devCliques, 0, sizeof(unsigned long long) * NUM_BLOCKS * K));
+    int* devCliques;
+    HANDLE_ERROR(cudaMalloc((void**)&devCliques, sizeof(int) * NUM_BLOCKS * K));
+    HANDLE_ERROR(cudaMemset(devCliques, 0, sizeof(int) * NUM_BLOCKS * K));
 
     unsigned int* devInducedSubrgaph;
     HANDLE_ERROR(cudaMalloc((void**)&devInducedSubrgaph, sizeof(unsigned int) * NUM_BLOCKS * MAX_DEG * (MAX_DEG / 32)));
@@ -334,7 +343,7 @@ int main(int argc, char* argv[]) {
 	HANDLE_ERROR(cudaEventDestroy(start));
 	HANDLE_ERROR(cudaEventDestroy(stop));
 
-    HANDLE_ERROR(cudaMemcpy(cliques, devCliques, sizeof(unsigned long long) * NUM_BLOCKS * K, cudaMemcpyDeviceToHost));
+    HANDLE_ERROR(cudaMemcpy(cliques, devCliques, sizeof(int) * NUM_BLOCKS * K, cudaMemcpyDeviceToHost));
 
     cudaFree(devEdges);
     cudaFree(devIntervals);
@@ -346,9 +355,10 @@ int main(int argc, char* argv[]) {
     std::ofstream output (argv[3]);
     if (output.is_open()) {
         for (int i = 0; i < K; i++) {
-            unsigned long long sum = 0;
+            int sum = 0;
             for (int j = 0; j < NUM_BLOCKS; j++) {
                 sum += cliques[i * NUM_BLOCKS + j];
+                sum %= MOD;
                 // std::cout << cliques[i * NUM_BLOCKS + j] << " ";
             }
             output << sum;
