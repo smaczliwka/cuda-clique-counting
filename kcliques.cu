@@ -7,10 +7,11 @@
 #include "errors.h"
 
 #define MAX_DEG 1024
-#define MAX_STACK MAX_DEG * MAX_DEG
+#define MAX_STACK MAX_DEG * MAX_DEG / 2
+#define MAX_DEPTH K
 
-#define BLOCK_SIZE 64
-#define NUM_BLOCKS 16
+#define BLOCK_SIZE 32
+#define NUM_BLOCKS 512
 
 std::vector<std::pair<int, int>> edges;
 std::map<int, int> degree;
@@ -19,7 +20,7 @@ std::map<int, int> id_to_number;
 std::map<int, int> number_to_id;
 
 
-__global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* intervals, int N, unsigned int* intersect, int* stackVertex, int* stackDepth, int* cliques, int K, unsigned int* inducedSubgraph) {
+__global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* intervals, int N, unsigned int* intersect, int* stackVertex, int* stackDepth, unsigned long long* cliques, int K, unsigned int* inducedSubgraph) {
     // TODO: Zakodować binarnie i zwiększyć MAX_DEG
     // __shared__ unsigned int inducedSubgraph[MAX_DEG * MAX_DEG / 32];
     // __shared__ int neighbours[MAX_DEG];
@@ -100,7 +101,7 @@ __global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* interv
 
         // Więcej jednynek niż graphSize. Czy to nie przeszkadza?
         for (int i = firstIntersectionIncl; i < lastIntersectionExcl; ++i) {
-            intersect[blockIdx.x * MAX_DEG * (MAX_DEG / 32) + 0 * (MAX_DEG / 32) + i] = ~0;
+            intersect[blockIdx.x * MAX_DEPTH * (MAX_DEG / 32) + 0 * (MAX_DEG / 32) + i] = ~0;
         }
 
         if (threadIdx.x == blockDim.x - 1) {
@@ -142,9 +143,9 @@ __global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* interv
 
             int children = 0;
             for (int i = firstIntersectionIncl; i < lastIntersectionExcl; ++i) {
-                intersect[blockIdx.x * MAX_DEG * (MAX_DEG / 32) + depth * (MAX_DEG / 32) + i] = intersect[blockIdx.x * MAX_DEG * (MAX_DEG / 32) + (depth - 1) * (MAX_DEG / 32) + i] & inducedSubgraph[blockIdx.x * MAX_DEG * (MAX_DEG / 32) + u * (MAX_DEG / 32) + i];
+                intersect[blockIdx.x * MAX_DEPTH * (MAX_DEG / 32) + depth * (MAX_DEG / 32) + i] = intersect[blockIdx.x * MAX_DEPTH * (MAX_DEG / 32) + (depth - 1) * (MAX_DEG / 32) + i] & inducedSubgraph[blockIdx.x * MAX_DEG * (MAX_DEG / 32) + u * (MAX_DEG / 32) + i];
                 for (int bit = 0; bit < 32; bit++) {
-                    children += ((intersect[blockIdx.x * MAX_DEG * (MAX_DEG / 32) + depth * (MAX_DEG / 32) + i] >> bit) & 1);
+                    children += ((intersect[blockIdx.x * MAX_DEPTH * (MAX_DEG / 32) + depth * (MAX_DEG / 32) + i] >> bit) & 1);
                 }
             }
 
@@ -160,7 +161,7 @@ __global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* interv
                 int pos = stackTop + pref[threadIdx.x] - children;
                 for (int i = firstIntersectionIncl; i < lastIntersectionExcl; ++i) {
                     for (int bit = 0; bit < 32; bit++) {
-                        if ((intersect[blockIdx.x * MAX_DEG * (MAX_DEG / 32) + depth * (MAX_DEG / 32) + i] >> bit) & 1 == 1) {
+                        if ((intersect[blockIdx.x * MAX_DEPTH * (MAX_DEG / 32) + depth * (MAX_DEG / 32) + i] >> bit) & 1 == 1) {
                             stackVertex[blockIdx.x * MAX_STACK + pos] = i * 32 + bit;
                             stackDepth[blockIdx.x * MAX_STACK + pos] = depth + 1;
                             pos++;
@@ -184,8 +185,6 @@ __global__ void kcliques(std::pair<int, int>* edges, std::pair<int, int>* interv
 }
 
 int main(int argc, char* argv[]) {
-
-    cudaFuncSetCacheConfig(kcliques, cudaFuncCachePreferShared);
 
     if (MAX_DEG % 32 != 0) {
         std::cerr << "MAX_DEG must be a multiple of 32";
@@ -294,7 +293,7 @@ int main(int argc, char* argv[]) {
     //     std::cout << i << " {"<<intervals[i].first << ", " << intervals[i].second << "}\n";
     // }
 
-    int cliques[NUM_BLOCKS * K];
+    unsigned long long cliques[NUM_BLOCKS * K];
 
     cudaEvent_t start, stop;
 	HANDLE_ERROR(cudaEventCreate(&start));
@@ -312,14 +311,13 @@ int main(int argc, char* argv[]) {
     unsigned int* devIntersect;
     int* devStackVertex;
     int* devStackDepth;
-    HANDLE_ERROR(cudaMalloc((void**)&devIntersect, sizeof(unsigned int) * NUM_BLOCKS * MAX_DEG * (MAX_DEG / 32)));
+    HANDLE_ERROR(cudaMalloc((void**)&devIntersect, sizeof(unsigned int) * NUM_BLOCKS * MAX_DEPTH * (MAX_DEG / 32)));
     HANDLE_ERROR(cudaMalloc((void**)&devStackVertex, sizeof(int) * MAX_STACK * NUM_BLOCKS));
     HANDLE_ERROR(cudaMalloc((void**)&devStackDepth, sizeof(int) * MAX_STACK * NUM_BLOCKS));
 
-    int* devCliques;
-    HANDLE_ERROR(cudaMalloc((void**)&devCliques, sizeof(int) * NUM_BLOCKS * K));
-    HANDLE_ERROR(cudaMemset(devCliques, 0, sizeof(int) * NUM_BLOCKS * K));
-    // HANDLE_ERROR(cudaMemcpy(devCliques, cliques, sizeof(int) * NUM_BLOCKS * K, cudaMemcpyHostToDevice));
+    unsigned long long* devCliques;
+    HANDLE_ERROR(cudaMalloc((void**)&devCliques, sizeof(unsigned long long) * NUM_BLOCKS * K));
+    HANDLE_ERROR(cudaMemset(devCliques, 0, sizeof(unsigned long long) * NUM_BLOCKS * K));
 
     unsigned int* devInducedSubrgaph;
     HANDLE_ERROR(cudaMalloc((void**)&devInducedSubrgaph, sizeof(unsigned int) * NUM_BLOCKS * MAX_DEG * (MAX_DEG / 32)));
@@ -336,7 +334,7 @@ int main(int argc, char* argv[]) {
 	HANDLE_ERROR(cudaEventDestroy(start));
 	HANDLE_ERROR(cudaEventDestroy(stop));
 
-    HANDLE_ERROR(cudaMemcpy(cliques, devCliques, sizeof(int) * NUM_BLOCKS * K, cudaMemcpyDeviceToHost));
+    HANDLE_ERROR(cudaMemcpy(cliques, devCliques, sizeof(unsigned long long) * NUM_BLOCKS * K, cudaMemcpyDeviceToHost));
 
     cudaFree(devEdges);
     cudaFree(devIntervals);
@@ -348,7 +346,7 @@ int main(int argc, char* argv[]) {
     std::ofstream output (argv[3]);
     if (output.is_open()) {
         for (int i = 0; i < K; i++) {
-            int sum = 0;
+            unsigned long long sum = 0;
             for (int j = 0; j < NUM_BLOCKS; j++) {
                 sum += cliques[i * NUM_BLOCKS + j];
                 // std::cout << cliques[i * NUM_BLOCKS + j] << " ";
