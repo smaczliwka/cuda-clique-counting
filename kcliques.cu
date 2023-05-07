@@ -10,7 +10,7 @@
 #define MAX_STACK MAX_DEG * MAX_DEG / 2
 #define MAX_DEPTH K
 
-#define BLOCK_SIZE 32
+#define BLOCK_SIZE 64
 #define NUM_BLOCKS 256
 #define GROUP_SIZE 32
 #define GROUPS_PER_BLOCK (int)(BLOCK_SIZE / GROUP_SIZE)
@@ -56,14 +56,14 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
         int codeSize = (graphSize + 31) / 32; // Na tylu liczbach kodujemy wiersz macierzy sąsiedztwa;
 
         // if (threadIdx.x == 0 && blockIdx.x == 0) {
-        //     printf("v = %d graphSize = %d\n", v, graphSize);
+        //     printf("v = %d graphSize = %d codeSize = %d\n", v, graphSize, codeSize);
         // }
 
         // for (int i = firstNeighbourIncl; i < lastNeighbourExcl; ++i) {
         //     neighbours[i] = edges[i + intervals[v].first].second;
         // }
 
-        __syncthreads();
+        // __syncthreads();
 
         for (int i = firstNeighbourIncl; i < lastNeighbourExcl; ++i) {
             uint u = edges[i + intervals[v].first].second; // Kopiujemy listę sąsiedztwa tego sąsiada
@@ -120,22 +120,42 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
         }
 
         stackTop = (graphSize / GROUPS_PER_BLOCK) + (graphSize % GROUPS_PER_BLOCK > groupId ? 1 : 0) - 1;
-        // if (threadIdx.x == 0 && blockIdx.x == 0) {
+        // if (threadInGroup == 0) {
         //     // printf("graphSize %d, GROUPS PER BLOCK %d\n", graphSize, GROUPS_PER_BLOCK);
         //     // printf("graphSize / GROUPS_PER_BLOCK %d\n", (graphSize / GROUPS_PER_BLOCK));
         //     // printf("(graphSize mod GROUPS_PER_BLOCK) %d\n", (graphSize % GROUPS_PER_BLOCK));
         //     printf("groupId = %d, initial stackTop = %d\n", groupId, stackTop);
         // }
 
+        if (threadIdx.x == 0) {
+            cliques[0 * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId]++;
+            cliques[0 * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] %= MOD;            
+        }
         if (threadInGroup == 0) {
             maxStackTop[groupId] = stackTop;
-            cliques[0 * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId]++;
-            cliques[0 * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] %= MOD;
             cliques[1 * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] += (graphSize / GROUPS_PER_BLOCK) + (graphSize % GROUPS_PER_BLOCK > groupId ? 1 : 0); // Odpowiada wszystkim tym wrzuconym na stos wierzchołkom
             cliques[1 * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] %= MOD;
         }
 
+        // __syncthreads();
+
+        // if (threadIdx.x == 0) {
+        //     for (int i = 0; i < GROUPS_PER_BLOCK; i++) {
+        //         printf("%d ", maxStackTop[i]);
+        //     }
+        //     printf("\n");
+        // }
+
         __syncthreads();
+
+        for (int i = 1; i < GROUPS_PER_BLOCK; i *= 2) {
+            if (threadInGroup == 0) {
+                maxStackTop[groupId] = max(maxStackTop[(groupId + i) % GROUPS_PER_BLOCK], maxStackTop[groupId]);
+            }
+            __syncthreads();
+        }
+
+        // __syncthreads();
 
         // if (threadIdx.x == 0 && blockIdx.x == 0) {
         //     printf("subgaph induced by %d\n", v);
@@ -149,20 +169,23 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
         //     }
         // }
 
-        while(true) {
+        while(maxStackTop[groupId] >= 0) {
+
+            // if (threadIdx.x == 0) {
+            //     printf("after reduce\n");
+            //     for (int i = 0; i < GROUPS_PER_BLOCK; i++) {
+            //         printf("%d ", maxStackTop[i]);
+            //     }
+            //     printf("\n");
+            // }
+
+            // __syncthreads();
             // if (threadIdx.x == 0 && blockIdx.x == 0) {
             //     printf("stackTop %d\n", stackTop);
             //     for (int i = 0; i <= stackTop; i++) {
             //         printf("%d (%d)\n", stackVertex[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + i], stackDepth[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + i]);
             //     }
             // }
-            for (int i = 1; i < GROUPS_PER_BLOCK; i *= 2) {
-                maxStackTop[groupId] = max(maxStackTop[(groupId + i) % GROUPS_PER_BLOCK], maxStackTop[groupId]);
-            }
-            if (maxStackTop[groupId] < 0) { // Stop kiedy wszystkie grupy mają stackTop -1. Trzeba zrobić reduce i znaleźć maksa.
-                break;
-            }
-
 
             if (stackTop >= 0) {
                 uint u = stackVertex[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + stackTop];
@@ -178,6 +201,16 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
                         children += ((intersect[blockIdx.x * GROUPS_PER_BLOCK * MAX_DEPTH * (MAX_DEG / 32) + groupId * MAX_DEPTH * (MAX_DEG / 32) + depth * (MAX_DEG / 32) + i] >> bit) & 1);
                     }
                 }
+
+                // if (threadIdx.x == 0) {
+                //     for (int i = 0; i < codeSize; i++) {
+                //         for (int bit = 0; bit < 32; bit++) {
+                //             //printf("%d", (inducedSubgraph[blockIdx.x * MAX_DEG * (MAX_DEG / 32) + u * (MAX_DEG / 32) + i] >> bit) & 1);
+                //             printf("%d", (intersect[blockIdx.x * GROUPS_PER_BLOCK * MAX_DEPTH * (MAX_DEG / 32) + groupId * MAX_DEPTH * (MAX_DEG / 32) + (depth) * (MAX_DEG / 32) + i] >> bit) & 1);
+                //         }
+                //     }
+                //     printf("\n");
+                // }
 
                 pref = children;
                 // printf("threadInGroup %d, pref before = %d\n", threadInGroup, pref);
@@ -196,7 +229,6 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
                 // }
 
                 
-
                 if (depth + 1 < K - 1) {
                     int pos = stackTop + pref - children;
                     for (int i = firstIntersectionIncl; i < lastIntersectionExcl; ++i) {
@@ -204,7 +236,7 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
                             if ((intersect[blockIdx.x * GROUPS_PER_BLOCK * MAX_DEPTH * (MAX_DEG / 32) + groupId * MAX_DEPTH * (MAX_DEG / 32) + depth * (MAX_DEG / 32) + i] >> bit) & 1 == 1) {
                                 stackVertex[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + pos] = i * 32 + bit;
                                 stackDepth[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + pos] = depth + 1;
-                                // printf("threadInGroup %d: wrzucam %d na pos %d\n", threadInGroup, i * 32 + bit, pos);
+                                // if (groupId == 0) printf("threadInGroup %d: wrzucam %d na pos %d\n", threadInGroup, i * 32 + bit, pos);
                                 pos++;
                             }
                         }
@@ -217,13 +249,31 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
                     cliques[(depth + 1) * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] %= MOD;
                     // if (blockIdx.x == 0) printf("cliques %d")
                     stackTop = (depth + 1 < K - 1 ? stackTop + pref - 1 : stackTop - 1);
-                    maxStackTop[groupId] = stackTop;
+                    //maxStackTop[groupId] = stackTop;
                     // printf("new stack top %d\n", stackTop);
                 }
 
                 stackTop = __shfl_sync(FULL_MASK, stackTop, GROUP_SIZE - 1);            
             }
 
+            if (threadInGroup == 0) {
+                maxStackTop[groupId] = stackTop;
+            }
+
+            __syncthreads();
+
+            // if (threadInGroup == 0) {
+            //     printf("groupId %d: stackTop = %d, maxStackTop = %d\n", groupId, stackTop, maxStackTop[groupId]);
+            // }
+
+            // __syncthreads();
+
+            for (int i = 1; i < GROUPS_PER_BLOCK; i *= 2) {
+                if (threadInGroup == 0) {
+                    maxStackTop[groupId] = max(maxStackTop[(groupId + i) % GROUPS_PER_BLOCK], maxStackTop[groupId]);
+                }
+                __syncthreads();
+            }
 
         }
 
