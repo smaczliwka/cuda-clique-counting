@@ -11,7 +11,7 @@
 #define MAX_DEPTH K
 
 #define BLOCK_SIZE 32
-#define NUM_BLOCKS 1
+#define NUM_BLOCKS 256
 #define GROUP_SIZE 32
 #define GROUPS_PER_BLOCK (int)(BLOCK_SIZE / GROUP_SIZE)
 
@@ -129,10 +129,10 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
 
         if (threadInGroup == 0) {
             maxStackTop[groupId] = stackTop;
-            cliques[0 * NUM_BLOCKS * GROUPS_PER_BLOCK + threadInGroup]++;
-            cliques[0 * NUM_BLOCKS * GROUPS_PER_BLOCK + threadInGroup] %= MOD;
-            cliques[1 * NUM_BLOCKS * GROUPS_PER_BLOCK + threadInGroup] += (graphSize / GROUPS_PER_BLOCK) + (graphSize % GROUPS_PER_BLOCK > groupId ? 1 : 0); // Odpowiada wszystkim tym wrzuconym na stos wierzchołkom
-            cliques[1 * NUM_BLOCKS * GROUPS_PER_BLOCK + threadInGroup] %= MOD;
+            cliques[0 * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId]++;
+            cliques[0 * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] %= MOD;
+            cliques[1 * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] += (graphSize / GROUPS_PER_BLOCK) + (graphSize % GROUPS_PER_BLOCK > groupId ? 1 : 0); // Odpowiada wszystkim tym wrzuconym na stos wierzchołkom
+            cliques[1 * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] %= MOD;
         }
 
         __syncthreads();
@@ -213,8 +213,9 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
 
                 if (threadInGroup == GROUP_SIZE - 1) {
                     // printf("threadInGroup %d, pref %d, depth + 1 = %d, K - 1 = %d\n stack top %d\n", threadInGroup, pref, depth + 1, K - 1, stackTop);
-                    cliques[(depth + 1) * NUM_BLOCKS * GROUPS_PER_BLOCK + groupId] += pref;
-                    cliques[(depth + 1) * NUM_BLOCKS * GROUPS_PER_BLOCK + groupId] %= MOD;
+                    cliques[(depth + 1) * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] += pref;
+                    cliques[(depth + 1) * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] %= MOD;
+                    // if (blockIdx.x == 0) printf("cliques %d")
                     stackTop = (depth + 1 < K - 1 ? stackTop + pref - 1 : stackTop - 1);
                     maxStackTop[groupId] = stackTop;
                     // printf("new stack top %d\n", stackTop);
@@ -351,7 +352,7 @@ int main(int argc, char* argv[]) {
     //     std::cout << i << " {"<<intervals[i].first << ", " << intervals[i].second << "}\n";
     // }
 
-    int cliques[NUM_BLOCKS * K];
+    int cliques[NUM_BLOCKS * GROUPS_PER_BLOCK * K];
 
     cudaEvent_t start, stop;
 	HANDLE_ERROR(cudaEventCreate(&start));
