@@ -11,9 +11,13 @@
 #define MAX_DEPTH K
 
 #define BLOCK_SIZE 32
-#define NUM_BLOCKS 512
+#define NUM_BLOCKS 1
+#define GROUP_SIZE 32
+#define GROUPS_PER_BLOCK (int)(BLOCK_SIZE / GROUP_SIZE)
 
 #define MOD 1000000000
+
+#define FULL_MASK 0xffffffff
 
 std::vector<std::pair<uint, uint>> edges;
 std::map<uint, uint> degree;
@@ -27,9 +31,10 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
     // __shared__ unsigned int inducedSubgraph[MAX_DEG * MAX_DEG / 32];
     // __shared__ uint neighbours[MAX_DEG];
 
-    __shared__ int stackTop;
+    __shared__ int maxStackTop[GROUPS_PER_BLOCK];
 
-    __shared__ int pref[BLOCK_SIZE];
+    int stackTop;
+    int pref;
 
     int part = N / gridDim.x;
     int rest = N % gridDim.x;
@@ -49,13 +54,8 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
         int lastNeighbourExcl = (threadIdx.x + 1) * graphPart + min(threadIdx.x + 1, graphRest);
 
         int codeSize = (graphSize + 31) / 32; // Na tylu liczbach kodujemy wiersz macierzy sąsiedztwa;
-        int codePart = codeSize / blockDim.x;
-        int codeRest = codeSize % blockDim.x;
 
-        int firstIntersectionIncl = threadIdx.x * codePart + min(threadIdx.x, codeRest);
-        int lastIntersectionExcl = (threadIdx.x + 1) * codePart + min(threadIdx.x + 1, codeRest);
-
-        // if (threadIdx.x == 0) {
+        // if (threadIdx.x == 0 && blockIdx.x == 0) {
         //     printf("v = %d graphSize = %d\n", v, graphSize);
         // }
 
@@ -96,22 +96,43 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
             }
         }
 
+        // Wykonujemy DFS
+
         for (int i = firstNeighbourIncl; i < lastNeighbourExcl; ++i) {
-            stackVertex[blockIdx.x * MAX_STACK + i] = i;
-            stackDepth[blockIdx.x * MAX_STACK + i] = 1;
+            // i-ty sąsiad trafia na stos grupy i % GROUPS_PER_BLOCK na pozycję i / GROUPS_PER_BLOCK
+            stackVertex[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + (i % GROUPS_PER_BLOCK) * MAX_STACK + (i / GROUPS_PER_BLOCK)] = i;
+            stackDepth[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + (i % GROUPS_PER_BLOCK) * MAX_STACK + (i / GROUPS_PER_BLOCK)] = 1;
         }
+
+        int codePart = codeSize / GROUP_SIZE;
+        int codeRest = codeSize % GROUP_SIZE;
+
+        int threadInGroup = threadIdx.x % GROUP_SIZE; // Którym jestem wątkiem w swojej grupie.
+        int groupId = threadIdx.x / GROUP_SIZE; // Numer mojej grupy.
+
+        int firstIntersectionIncl = threadInGroup * codePart + min(threadInGroup, codeRest);
+        int lastIntersectionExcl = (threadInGroup + 1) * codePart + min(threadInGroup + 1, codeRest);
+
 
         // Więcej jednynek niż graphSize. Czy to nie przeszkadza?
         for (int i = firstIntersectionIncl; i < lastIntersectionExcl; ++i) {
-            intersect[blockIdx.x * MAX_DEPTH * (MAX_DEG / 32) + 0 * (MAX_DEG / 32) + i] = ~0;
+            intersect[blockIdx.x * GROUPS_PER_BLOCK * MAX_DEPTH * (MAX_DEG / 32) + groupId * MAX_DEPTH * (MAX_DEG / 32) + 0 * (MAX_DEG / 32) + i] = ~0;
         }
 
-        if (threadIdx.x == blockDim.x - 1) {
-            stackTop = graphSize - 1;
-            cliques[0 * NUM_BLOCKS + blockIdx.x]++;
-            cliques[0 * NUM_BLOCKS + blockIdx.x] %= MOD;
-            cliques[1 * NUM_BLOCKS + blockIdx.x] += graphSize; // Odpowiada wszystkim tym wrzuconym na stos wierzchołkom
-            cliques[1 * NUM_BLOCKS + blockIdx.x] %= MOD;
+        stackTop = (graphSize / GROUPS_PER_BLOCK) + (graphSize % GROUPS_PER_BLOCK > groupId ? 1 : 0) - 1;
+        // if (threadIdx.x == 0 && blockIdx.x == 0) {
+        //     // printf("graphSize %d, GROUPS PER BLOCK %d\n", graphSize, GROUPS_PER_BLOCK);
+        //     // printf("graphSize / GROUPS_PER_BLOCK %d\n", (graphSize / GROUPS_PER_BLOCK));
+        //     // printf("(graphSize mod GROUPS_PER_BLOCK) %d\n", (graphSize % GROUPS_PER_BLOCK));
+        //     printf("groupId = %d, initial stackTop = %d\n", groupId, stackTop);
+        // }
+
+        if (threadInGroup == 0) {
+            maxStackTop[groupId] = stackTop;
+            cliques[0 * NUM_BLOCKS * GROUPS_PER_BLOCK + threadInGroup]++;
+            cliques[0 * NUM_BLOCKS * GROUPS_PER_BLOCK + threadInGroup] %= MOD;
+            cliques[1 * NUM_BLOCKS * GROUPS_PER_BLOCK + threadInGroup] += (graphSize / GROUPS_PER_BLOCK) + (graphSize % GROUPS_PER_BLOCK > groupId ? 1 : 0); // Odpowiada wszystkim tym wrzuconym na stos wierzchołkom
+            cliques[1 * NUM_BLOCKS * GROUPS_PER_BLOCK + threadInGroup] %= MOD;
         }
 
         __syncthreads();
@@ -121,7 +142,7 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
         //     for (int i = 0; i < graphSize; i++) {
         //         for (int number = 0; number < codeSize; number++) {
         //             for (int bit = 0; bit < 32 && number * 32 + bit < graphSize; bit++) {
-        //                 printf("%d ", (inducedSubgraph[i][number] >> bit) & 1);
+        //                 printf("%d ", (inducedSubgraph[blockIdx.x * MAX_DEG * (MAX_DEG / 32) + i * (MAX_DEG / 32) + number] >> bit) & 1);
         //             }
         //         }
         //         printf("\n");
@@ -132,64 +153,92 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
             // if (threadIdx.x == 0 && blockIdx.x == 0) {
             //     printf("stackTop %d\n", stackTop);
             //     for (int i = 0; i <= stackTop; i++) {
-            //         printf("%d (%d)\n", stackVertex[blockIdx.x * MAX_STACK + i], stackDepth[blockIdx.x * MAX_STACK + i]);
+            //         printf("%d (%d)\n", stackVertex[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + i], stackDepth[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + i]);
             //     }
             // }
-            if (stackTop < 0) {
+            for (int i = 1; i < GROUPS_PER_BLOCK; i *= 2) {
+                maxStackTop[groupId] = max(maxStackTop[(groupId + i) % GROUPS_PER_BLOCK], maxStackTop[groupId]);
+            }
+            if (maxStackTop[groupId] < 0) { // Stop kiedy wszystkie grupy mają stackTop -1. Trzeba zrobić reduce i znaleźć maksa.
                 break;
             }
 
-            uint u = stackVertex[blockIdx.x * MAX_STACK + stackTop];
-            int depth = stackDepth[blockIdx.x * MAX_STACK + stackTop];
-            // if (threadIdx.x == 0 && blockIdx.x == 0) {
-            //     printf("vertex %d of depth %d\n", u, depth);
-            // }
 
-            int children = 0;
-            for (int i = firstIntersectionIncl; i < lastIntersectionExcl; ++i) {
-                intersect[blockIdx.x * MAX_DEPTH * (MAX_DEG / 32) + depth * (MAX_DEG / 32) + i] = intersect[blockIdx.x * MAX_DEPTH * (MAX_DEG / 32) + (depth - 1) * (MAX_DEG / 32) + i] & inducedSubgraph[blockIdx.x * MAX_DEG * (MAX_DEG / 32) + u * (MAX_DEG / 32) + i];
-                for (int bit = 0; bit < 32; bit++) {
-                    children += ((intersect[blockIdx.x * MAX_DEPTH * (MAX_DEG / 32) + depth * (MAX_DEG / 32) + i] >> bit) & 1);
-                }
-            }
+            if (stackTop >= 0) {
+                uint u = stackVertex[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + stackTop];
+                int depth = stackDepth[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + stackTop];
+                // if (threadIdx.x == 0 && blockIdx.x == 0) {
+                //     printf("vertex %d of depth %d\n", u, depth);
+                // }
 
-            pref[threadIdx.x] = children;
-            __syncthreads();
-
-            for (int i = 1; i < BLOCK_SIZE; i *= 2) {
-                pref[threadIdx.x] += (threadIdx.x >= i ? pref[threadIdx.x - i] : 0);
-                __syncthreads();
-            }
-
-            if (depth + 1 < K - 1) {
-                int pos = stackTop + pref[threadIdx.x] - children;
+                int children = 0;
                 for (int i = firstIntersectionIncl; i < lastIntersectionExcl; ++i) {
+                    intersect[blockIdx.x * GROUPS_PER_BLOCK * MAX_DEPTH * (MAX_DEG / 32) + groupId * MAX_DEPTH * (MAX_DEG / 32) + depth * (MAX_DEG / 32) + i] = intersect[blockIdx.x * GROUPS_PER_BLOCK * MAX_DEPTH * (MAX_DEG / 32) + groupId * MAX_DEPTH * (MAX_DEG / 32) + (depth - 1) * (MAX_DEG / 32) + i] & inducedSubgraph[blockIdx.x * MAX_DEG * (MAX_DEG / 32) + u * (MAX_DEG / 32) + i];
                     for (int bit = 0; bit < 32; bit++) {
-                        if ((intersect[blockIdx.x * MAX_DEPTH * (MAX_DEG / 32) + depth * (MAX_DEG / 32) + i] >> bit) & 1 == 1) {
-                            stackVertex[blockIdx.x * MAX_STACK + pos] = i * 32 + bit;
-                            stackDepth[blockIdx.x * MAX_STACK + pos] = depth + 1;
-                            pos++;
+                        children += ((intersect[blockIdx.x * GROUPS_PER_BLOCK * MAX_DEPTH * (MAX_DEG / 32) + groupId * MAX_DEPTH * (MAX_DEG / 32) + depth * (MAX_DEG / 32) + i] >> bit) & 1);
+                    }
+                }
+
+                pref = children;
+                // printf("threadInGroup %d, pref before = %d\n", threadInGroup, pref);
+                // for (int i = 1; i < GROUP_SIZE; i *= 2) {
+                //     pref += __shfl_up_sync(FULL_MASK, pref, i);
+                // }
+                for (int i = 1; i < GROUP_SIZE; i *= 2) {
+                    int tmp = __shfl_sync(FULL_MASK, pref, threadInGroup - i);
+                    pref += (threadInGroup >= i ? tmp : 0);
+                }
+                // printf("threadInGroup %d, pref = %d\n", threadInGroup, pref);
+
+                // for (int i = 1; i < GROUP_SIZE; i *= 2) {
+                //     pref[threadIdx.x] += (threadInGroup >= i ? pref[threadIdx.x - i] : 0);
+                //     __syncthreads();
+                // }
+
+                
+
+                if (depth + 1 < K - 1) {
+                    int pos = stackTop + pref - children;
+                    for (int i = firstIntersectionIncl; i < lastIntersectionExcl; ++i) {
+                        for (int bit = 0; bit < 32; bit++) {
+                            if ((intersect[blockIdx.x * GROUPS_PER_BLOCK * MAX_DEPTH * (MAX_DEG / 32) + groupId * MAX_DEPTH * (MAX_DEG / 32) + depth * (MAX_DEG / 32) + i] >> bit) & 1 == 1) {
+                                stackVertex[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + pos] = i * 32 + bit;
+                                stackDepth[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + pos] = depth + 1;
+                                // printf("threadInGroup %d: wrzucam %d na pos %d\n", threadInGroup, i * 32 + bit, pos);
+                                pos++;
+                            }
                         }
                     }
                 }
+
+                if (threadInGroup == GROUP_SIZE - 1) {
+                    // printf("threadInGroup %d, pref %d, depth + 1 = %d, K - 1 = %d\n stack top %d\n", threadInGroup, pref, depth + 1, K - 1, stackTop);
+                    cliques[(depth + 1) * NUM_BLOCKS * GROUPS_PER_BLOCK + groupId] += pref;
+                    cliques[(depth + 1) * NUM_BLOCKS * GROUPS_PER_BLOCK + groupId] %= MOD;
+                    stackTop = (depth + 1 < K - 1 ? stackTop + pref - 1 : stackTop - 1);
+                    maxStackTop[groupId] = stackTop;
+                    // printf("new stack top %d\n", stackTop);
+                }
+
+                stackTop = __shfl_sync(FULL_MASK, stackTop, GROUP_SIZE - 1);            
             }
 
-            // teraz pos = stackTop + pref[threadId.x]
-            __syncthreads();
 
-            if (threadIdx.x == blockDim.x - 1) {
-                cliques[(depth + 1) * NUM_BLOCKS + blockIdx.x] += pref[threadIdx.x];
-                cliques[(depth + 1) * NUM_BLOCKS + blockIdx.x] %= MOD;
-                stackTop = (depth + 1 < K - 1 ? stackTop + pref[threadIdx.x] - 1 : stackTop - 1);
-            }
-
-            __syncthreads();
         }
 
     }
 }
 
 int main(int argc, char* argv[]) {
+
+    if (32 % GROUP_SIZE != 0) {
+        std::cerr << "Warp size must be a multiple of GROUP_SIZE";
+        return 1;       
+    }
+    if (BLOCK_SIZE % GROUP_SIZE != 0) {
+        std::cerr << "BLOCK_SIZE must be a multiple of GROUP_SIZE";
+        return 1;  
+    }
 
     if (MAX_DEG % 32 != 0) {
         std::cerr << "MAX_DEG must be a multiple of 32";
@@ -320,13 +369,13 @@ int main(int argc, char* argv[]) {
     unsigned int* devIntersect;
     uint* devStackVertex;
     int* devStackDepth;
-    HANDLE_ERROR(cudaMalloc((void**)&devIntersect, sizeof(unsigned int) * NUM_BLOCKS * MAX_DEPTH * (MAX_DEG / 32)));
-    HANDLE_ERROR(cudaMalloc((void**)&devStackVertex, sizeof(uint) * MAX_STACK * NUM_BLOCKS));
-    HANDLE_ERROR(cudaMalloc((void**)&devStackDepth, sizeof(int) * MAX_STACK * NUM_BLOCKS));
+    HANDLE_ERROR(cudaMalloc((void**)&devIntersect, sizeof(unsigned int) * NUM_BLOCKS * GROUPS_PER_BLOCK * MAX_DEPTH * (MAX_DEG / 32)));
+    HANDLE_ERROR(cudaMalloc((void**)&devStackVertex, sizeof(uint) * MAX_STACK * NUM_BLOCKS * GROUPS_PER_BLOCK));
+    HANDLE_ERROR(cudaMalloc((void**)&devStackDepth, sizeof(int) * MAX_STACK * NUM_BLOCKS * GROUPS_PER_BLOCK));
 
     int* devCliques;
-    HANDLE_ERROR(cudaMalloc((void**)&devCliques, sizeof(int) * NUM_BLOCKS * K));
-    HANDLE_ERROR(cudaMemset(devCliques, 0, sizeof(int) * NUM_BLOCKS * K));
+    HANDLE_ERROR(cudaMalloc((void**)&devCliques, sizeof(int) * NUM_BLOCKS * GROUPS_PER_BLOCK * K));
+    HANDLE_ERROR(cudaMemset(devCliques, 0, sizeof(int) * NUM_BLOCKS * GROUPS_PER_BLOCK * K));
 
     unsigned int* devInducedSubrgaph;
     HANDLE_ERROR(cudaMalloc((void**)&devInducedSubrgaph, sizeof(unsigned int) * NUM_BLOCKS * MAX_DEG * (MAX_DEG / 32)));
@@ -343,7 +392,7 @@ int main(int argc, char* argv[]) {
 	HANDLE_ERROR(cudaEventDestroy(start));
 	HANDLE_ERROR(cudaEventDestroy(stop));
 
-    HANDLE_ERROR(cudaMemcpy(cliques, devCliques, sizeof(int) * NUM_BLOCKS * K, cudaMemcpyDeviceToHost));
+    HANDLE_ERROR(cudaMemcpy(cliques, devCliques, sizeof(int) * NUM_BLOCKS * GROUPS_PER_BLOCK * K, cudaMemcpyDeviceToHost));
 
     cudaFree(devEdges);
     cudaFree(devIntervals);
@@ -356,8 +405,8 @@ int main(int argc, char* argv[]) {
     if (output.is_open()) {
         for (int i = 0; i < K; i++) {
             int sum = 0;
-            for (int j = 0; j < NUM_BLOCKS; j++) {
-                sum += cliques[i * NUM_BLOCKS + j];
+            for (int j = 0; j < NUM_BLOCKS * GROUPS_PER_BLOCK; j++) {
+                sum += cliques[i * NUM_BLOCKS * GROUPS_PER_BLOCK + j];
                 sum %= MOD;
                 // std::cout << cliques[i * NUM_BLOCKS + j] << " ";
             }
