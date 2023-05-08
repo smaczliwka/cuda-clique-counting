@@ -2,7 +2,7 @@
 #include <fstream>
 #include <iostream>
 #include <vector>
-#include <map>
+#include <unordered_map>
 #include <algorithm>
 #include "errors.h"
 
@@ -17,28 +17,17 @@
 
 #define MOD 1000000000
 
-// #define FULL_MASK 0xffffffff
-
 std::vector<std::pair<uint, uint>> edges;
-std::map<uint, uint> degree;
+std::unordered_map<uint, uint> degree;
 
-std::map<uint, uint> id_to_number;
-std::map<uint, uint> number_to_id;
+std::unordered_map<uint, uint> id_to_number;
+std::unordered_map<uint, uint> number_to_id;
 
 
 __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* intervals, int N, unsigned int* intersect, uint* stackVertex, int* stackDepth, int* cliques, int K, unsigned int* inducedSubgraph) {
-    // TODO: Zakodować binarnie i zwiększyć MAX_DEG
-    // __shared__ unsigned int inducedSubgraph[MAX_DEG * MAX_DEG / 32];
-    // __shared__ uint neighbours[MAX_DEG];
-
     uint mask = ((~(uint)0) >> (32 - GROUP_SIZE));
     int groupInWarp = (threadIdx.x % 32) / GROUP_SIZE;
     mask = mask << (groupInWarp * GROUP_SIZE);
-
-    // if (threadIdx.x == GROUP_SIZE - 1)
-    // for (int bit = 31; bit >= 0; bit--) {
-    //     printf("%d", (mask >> bit) & 1);   
-    // }
 
     __shared__ int maxStackTop[GROUPS_PER_BLOCK];
 
@@ -47,8 +36,7 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
 
     int part = N / gridDim.x;
     int rest = N % gridDim.x;
-    // Maksymalna różnica liczby przetwarzanych wierzchołków między blokami wynosi 1
-    // TODO: Być może lepiej, żeby ostatni blok robił mniej
+
     int firstVertexIncl = blockIdx.x * part + min(blockIdx.x, rest);
     int lastVertexExcl = (blockIdx.x + 1) * part + min(blockIdx.x + 1, rest);
 
@@ -57,22 +45,10 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
         int graphPart = graphSize / blockDim.x;
         int graphRest = graphSize % blockDim.x;
 
-        // Maksymalna różnica liczby przetwarzanych sąsiadów v między wątkami wynosi 1
-        // TODO: Być może lepiej, żeby ostatni wątek robił mniej
         int firstNeighbourIncl = threadIdx.x * graphPart + min(threadIdx.x, graphRest);
         int lastNeighbourExcl = (threadIdx.x + 1) * graphPart + min(threadIdx.x + 1, graphRest);
 
-        int codeSize = (graphSize + 31) / 32; // Na tylu liczbach kodujemy wiersz macierzy sąsiedztwa;
-
-        // if (threadIdx.x == 0 && blockIdx.x == 0) {
-        //     printf("v = %d graphSize = %d codeSize = %d\n", v, graphSize, codeSize);
-        // }
-
-        // for (int i = firstNeighbourIncl; i < lastNeighbourExcl; ++i) {
-        //     neighbours[i] = edges[i + intervals[v].first].second;
-        // }
-
-        // __syncthreads();
+        int codeSize = (graphSize + 31) / 32; // Na tylu liczbach kodujemy wiersz macierzy sąsiedztwa
 
         for (int i = firstNeighbourIncl; i < lastNeighbourExcl; ++i) {
             uint u = edges[i + intervals[v].first].second; // Kopiujemy listę sąsiedztwa tego sąsiada
@@ -116,8 +92,8 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
         int codePart = codeSize / GROUP_SIZE;
         int codeRest = codeSize % GROUP_SIZE;
 
-        int threadInGroup = threadIdx.x % GROUP_SIZE; // Którym jestem wątkiem w swojej grupie.
-        int groupId = threadIdx.x / GROUP_SIZE; // Numer mojej grupy.
+        int threadInGroup = threadIdx.x % GROUP_SIZE; // Którym jestem wątkiem w swojej grupie
+        int groupId = threadIdx.x / GROUP_SIZE; // Numer mojej grupy
 
         int firstIntersectionIncl = threadInGroup * codePart + min(threadInGroup, codeRest);
         int lastIntersectionExcl = (threadInGroup + 1) * codePart + min(threadInGroup + 1, codeRest);
@@ -129,12 +105,6 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
         }
 
         stackTop = (graphSize / GROUPS_PER_BLOCK) + (graphSize % GROUPS_PER_BLOCK > groupId ? 1 : 0) - 1;
-        // if (threadInGroup == 0) {
-        //     // printf("graphSize %d, GROUPS PER BLOCK %d\n", graphSize, GROUPS_PER_BLOCK);
-        //     // printf("graphSize / GROUPS_PER_BLOCK %d\n", (graphSize / GROUPS_PER_BLOCK));
-        //     // printf("(graphSize mod GROUPS_PER_BLOCK) %d\n", (graphSize % GROUPS_PER_BLOCK));
-        //     printf("groupId = %d, initial stackTop = %d\n", groupId, stackTop);
-        // }
 
         if (threadIdx.x == 0) {
             cliques[0 * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId]++;
@@ -145,16 +115,6 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
             cliques[1 * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] += (graphSize / GROUPS_PER_BLOCK) + (graphSize % GROUPS_PER_BLOCK > groupId ? 1 : 0); // Odpowiada wszystkim tym wrzuconym na stos wierzchołkom
             cliques[1 * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] %= MOD;
         }
-
-        // __syncthreads();
-
-        // if (threadIdx.x == 0) {
-        //     for (int i = 0; i < GROUPS_PER_BLOCK; i++) {
-        //         printf("%d ", maxStackTop[i]);
-        //     }
-        //     printf("\n");
-        // }
-
         __syncthreads();
 
         for (int i = 1; i < GROUPS_PER_BLOCK; i *= 2) {
@@ -164,44 +124,11 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
             __syncthreads();
         }
 
-        // __syncthreads();
-
-        // if (threadIdx.x == 0 && blockIdx.x == 0) {
-        //     printf("subgaph induced by %d\n", v);
-        //     for (int i = 0; i < graphSize; i++) {
-        //         for (int number = 0; number < codeSize; number++) {
-        //             for (int bit = 0; bit < 32 && number * 32 + bit < graphSize; bit++) {
-        //                 printf("%d ", (inducedSubgraph[blockIdx.x * MAX_DEG * (MAX_DEG / 32) + i * (MAX_DEG / 32) + number] >> bit) & 1);
-        //             }
-        //         }
-        //         printf("\n");
-        //     }
-        // }
-
         while(maxStackTop[groupId] >= 0) {
-
-            // if (threadIdx.x == 0) {
-            //     printf("after reduce\n");
-            //     for (int i = 0; i < GROUPS_PER_BLOCK; i++) {
-            //         printf("%d ", maxStackTop[i]);
-            //     }
-            //     printf("\n");
-            // }
-
-            // __syncthreads();
-            // if (threadInGroup == 0) {
-            //     printf("groupId = %d: stackTop %d\n", groupId, stackTop);
-            //     for (int i = 0; i <= stackTop; i++) {
-            //         printf("groupId = %d: %d (%d)\n", groupId, stackVertex[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + i], stackDepth[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + i]);
-            //     }
-            // }
 
             if (stackTop >= 0) {
                 uint u = stackVertex[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + stackTop];
                 int depth = stackDepth[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + stackTop];
-                // if (threadInGroup == 0) {
-                //     printf("groupId = %d: vertex %d of depth %d\n", groupId, u, depth);
-                // }
 
                 int children = 0;
                 for (int i = firstIntersectionIncl; i < lastIntersectionExcl; ++i) {
@@ -211,32 +138,12 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
                     }
                 }
 
-                // if (threadIdx.x == 0) {
-                //     for (int i = 0; i < codeSize; i++) {
-                //         for (int bit = 0; bit < 32; bit++) {
-                //             //printf("%d", (inducedSubgraph[blockIdx.x * MAX_DEG * (MAX_DEG / 32) + u * (MAX_DEG / 32) + i] >> bit) & 1);
-                //             printf("%d", (intersect[blockIdx.x * GROUPS_PER_BLOCK * MAX_DEPTH * (MAX_DEG / 32) + groupId * MAX_DEPTH * (MAX_DEG / 32) + (depth) * (MAX_DEG / 32) + i] >> bit) & 1);
-                //         }
-                //     }
-                //     printf("\n");
-                // }
-
                 pref = children;
-                // printf("threadInGroup %d, pref before = %d\n", threadInGroup, pref);
-                // for (int i = 1; i < GROUP_SIZE; i *= 2) {
-                //     pref += __shfl_up_sync(FULL_MASK, pref, i);
-                // }
+
                 for (int i = 1; i < GROUP_SIZE; i *= 2) {
                     int tmp = __shfl_sync(mask, pref, threadInGroup - i, GROUP_SIZE);
                     pref += (threadInGroup >= i ? tmp : 0);
                 }
-                // printf("threadInGroup %d, pref = %d\n", threadInGroup, pref);
-
-                // for (int i = 1; i < GROUP_SIZE; i *= 2) {
-                //     pref[threadIdx.x] += (threadInGroup >= i ? pref[threadIdx.x - i] : 0);
-                //     __syncthreads();
-                // }
-
                 
                 if (depth + 1 < K - 1) {
                     int pos = stackTop + pref - children;
@@ -245,7 +152,6 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
                             if ((intersect[blockIdx.x * GROUPS_PER_BLOCK * MAX_DEPTH * (MAX_DEG / 32) + groupId * MAX_DEPTH * (MAX_DEG / 32) + depth * (MAX_DEG / 32) + i] >> bit) & 1 == 1) {
                                 stackVertex[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + pos] = i * 32 + bit;
                                 stackDepth[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + pos] = depth + 1;
-                                // if (groupId == 0) printf("threadInGroup %d: wrzucam %d na pos %d\n", threadInGroup, i * 32 + bit, pos);
                                 pos++;
                             }
                         }
@@ -253,13 +159,9 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
                 }
 
                 if (threadInGroup == GROUP_SIZE - 1) {
-                    // printf("threadInGroup %d, pref %d, depth + 1 = %d, K - 1 = %d\n stack top %d\n", threadInGroup, pref, depth + 1, K - 1, stackTop);
                     cliques[(depth + 1) * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] += pref;
                     cliques[(depth + 1) * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] %= MOD;
-                    // if (blockIdx.x == 0) printf("cliques %d")
                     stackTop = (depth + 1 < K - 1 ? stackTop + pref - 1 : stackTop - 1);
-                    //maxStackTop[groupId] = stackTop;
-                    // printf("new stack top %d\n", stackTop);
                 }
 
                 stackTop = __shfl_sync(mask, stackTop, groupId * GROUP_SIZE + (GROUP_SIZE - 1), GROUP_SIZE);            
@@ -271,21 +173,13 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
 
             __syncthreads();
 
-            // if (threadInGroup == 0) {
-            //     printf("groupId %d: stackTop = %d, maxStackTop = %d\n", groupId, stackTop, maxStackTop[groupId]);
-            // }
-
-            // __syncthreads();
-
             for (int i = 1; i < GROUPS_PER_BLOCK; i *= 2) {
                 if (threadInGroup == 0) {
                     maxStackTop[groupId] = max(maxStackTop[(groupId + i) % GROUPS_PER_BLOCK], maxStackTop[groupId]);
                 }
                 __syncthreads();
             }
-
         }
-
     }
 }
 
@@ -373,7 +267,7 @@ int main(int argc, char* argv[]) {
 
     // Przenumerowanie id na liczby z przedziału od 0 do N
     uint num = 0;
-    for (std::map<uint, uint>::iterator it = degree.begin(); it != degree.end(); ++it) {
+    for (std::unordered_map<uint, uint>::iterator it = degree.begin(); it != degree.end(); ++it) {
         id_to_number[it->first] = num;
         number_to_id[num] = it->first;
         num++;
@@ -385,12 +279,10 @@ int main(int argc, char* argv[]) {
         uint a = edges[i].first;
         uint b = edges[i].second;
         if (degree[b] > degree[a] || (degree[b] == degree[a] && id_to_number[b] > id_to_number[a])) {
-            // graph[id_to_number[a]].push_back(id_to_number[b]);
             edges[i].first = id_to_number[a];
             edges[i].second = id_to_number[b];
         }
         else {
-            // graph[id_to_number[b]].push_back(id_to_number[a]);
             edges[i].first = id_to_number[b];
             edges[i].second = id_to_number[a];
         }
@@ -423,13 +315,6 @@ int main(int argc, char* argv[]) {
         l = r;
         r = l + 1;
     }
-
-    // for (int i = 0; i < edges.size(); i++) {
-    //     std::cout << edges[i].first << " " << edges[i].second << "\n";
-    // }
-    // for (int i = 0; i < N; i++) {
-    //     std::cout << i << " {"<<intervals[i].first << ", " << intervals[i].second << "}\n";
-    // }
 
     int cliques[K];
 
@@ -486,14 +371,6 @@ int main(int argc, char* argv[]) {
     if (output.is_open()) {
         for (int i = 0; i < K; i++) {
             output << cliques[i] << " ";
-            // int sum = 0;
-            // for (int j = 0; j < NUM_BLOCKS * GROUPS_PER_BLOCK; j++) {
-            //     sum += cliques[i * NUM_BLOCKS * GROUPS_PER_BLOCK + j];
-            //     sum %= MOD;
-            //     // std::cout << cliques[i * NUM_BLOCKS + j] << " ";
-            // }
-            // output << sum;
-            // if (i < K - 1) output << " ";
         }
         output.close();
     }
