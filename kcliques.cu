@@ -289,6 +289,26 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
     }
 }
 
+__global__ void reduce(int* cliques, int columns) {
+    __shared__ int row[NUM_BLOCKS * GROUPS_PER_BLOCK];
+
+    row[threadIdx.x] = cliques[blockIdx.x * columns + threadIdx.x];
+
+    __syncthreads();
+
+    for (int i = 1; i < columns; i *= 2) {
+        if (threadIdx.x % (2 * i) == 0 && threadIdx.x + i < columns) {
+            row[threadIdx.x] += row[threadIdx.x + i];
+            row[threadIdx.x] %= MOD;
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0) {
+        cliques[blockIdx.x] = row[0];
+    }
+}
+
 int main(int argc, char* argv[]) {
 
     if (32 % GROUP_SIZE != 0) {
@@ -411,7 +431,7 @@ int main(int argc, char* argv[]) {
     //     std::cout << i << " {"<<intervals[i].first << ", " << intervals[i].second << "}\n";
     // }
 
-    int cliques[NUM_BLOCKS * GROUPS_PER_BLOCK * K];
+    int cliques[K];
 
     cudaEvent_t start, stop;
 	HANDLE_ERROR(cudaEventCreate(&start));
@@ -441,6 +461,7 @@ int main(int argc, char* argv[]) {
     HANDLE_ERROR(cudaMalloc((void**)&devInducedSubrgaph, sizeof(unsigned int) * NUM_BLOCKS * MAX_DEG * (MAX_DEG / 32)));
 
     kcliques<<<NUM_BLOCKS, BLOCK_SIZE>>>(devEdges, devIntervals, N, devIntersect, devStackVertex, devStackDepth, devCliques, K, devInducedSubrgaph);
+    reduce<<<K, NUM_BLOCKS * GROUPS_PER_BLOCK>>>(devCliques, NUM_BLOCKS * GROUPS_PER_BLOCK);
 
     HANDLE_ERROR(cudaEventRecord(stop, 0));
 	HANDLE_ERROR(cudaEventSynchronize(stop));
@@ -452,7 +473,7 @@ int main(int argc, char* argv[]) {
 	HANDLE_ERROR(cudaEventDestroy(start));
 	HANDLE_ERROR(cudaEventDestroy(stop));
 
-    HANDLE_ERROR(cudaMemcpy(cliques, devCliques, sizeof(int) * NUM_BLOCKS * GROUPS_PER_BLOCK * K, cudaMemcpyDeviceToHost));
+    HANDLE_ERROR(cudaMemcpy(cliques, devCliques, sizeof(int) * K, cudaMemcpyDeviceToHost));
 
     cudaFree(devEdges);
     cudaFree(devIntervals);
@@ -464,14 +485,15 @@ int main(int argc, char* argv[]) {
     std::ofstream output (argv[3]);
     if (output.is_open()) {
         for (int i = 0; i < K; i++) {
-            int sum = 0;
-            for (int j = 0; j < NUM_BLOCKS * GROUPS_PER_BLOCK; j++) {
-                sum += cliques[i * NUM_BLOCKS * GROUPS_PER_BLOCK + j];
-                sum %= MOD;
-                // std::cout << cliques[i * NUM_BLOCKS + j] << " ";
-            }
-            output << sum;
-            if (i < K - 1) output << " ";
+            output << cliques[i] << " ";
+            // int sum = 0;
+            // for (int j = 0; j < NUM_BLOCKS * GROUPS_PER_BLOCK; j++) {
+            //     sum += cliques[i * NUM_BLOCKS * GROUPS_PER_BLOCK + j];
+            //     sum %= MOD;
+            //     // std::cout << cliques[i * NUM_BLOCKS + j] << " ";
+            // }
+            // output << sum;
+            // if (i < K - 1) output << " ";
         }
         output.close();
     }
