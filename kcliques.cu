@@ -6,12 +6,13 @@
 #include <algorithm>
 #include "errors.h"
 
+#define MAX_VERTICES 5000000
+#define MAX_EDGES 5000000
 #define MAX_DEG 1024
-#define MAX_STACK MAX_DEG * MAX_DEG / 2
 #define MAX_DEPTH K
 
 #define BLOCK_SIZE 32
-#define NUM_BLOCKS 128
+#define MAX_NUM_BLOCKS 128
 #define GROUP_SIZE 8
 #define GROUPS_PER_BLOCK (int)(BLOCK_SIZE / GROUP_SIZE)
 
@@ -23,8 +24,7 @@ std::unordered_map<uint, uint> degree;
 std::unordered_map<uint, uint> id_to_number;
 std::unordered_map<uint, uint> number_to_id;
 
-
-__global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* intervals, int N, unsigned int* intersect, uint* stackVertex, int* stackDepth, int* cliques, int K, unsigned int* inducedSubgraph) {
+__global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* intervals, int N, unsigned int* intersect, uint* stackVertex, int* stackDepth, int* cliques, int K, unsigned int* inducedSubgraph, int maxDeg, int maxStackSize) {
     uint mask = ((~(uint)0) >> (32 - GROUP_SIZE));
     int groupInWarp = (threadIdx.x % 32) / GROUP_SIZE;
     mask = mask << (groupInWarp * GROUP_SIZE);
@@ -56,7 +56,7 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
 
             // Czyścimy wiersz odpowiadający u w inducedSubgraph
             for (int j = 0; j < codeSize; ++j) {
-                inducedSubgraph[blockIdx.x * MAX_DEG * (MAX_DEG / 32) + i * (MAX_DEG / 32) + j] = 0;
+                inducedSubgraph[blockIdx.x * maxDeg * (maxDeg / 32) + i * (maxDeg / 32) + j] = 0;
             }
 
             for (int j = intervals[u].first; j < intervals[u].second; j++) {
@@ -76,7 +76,7 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
                     // left = numer odpowiadający w w indukowanym podgrafie
                     int number = left / 32;
                     int bit = left % 32;
-                    inducedSubgraph[blockIdx.x * MAX_DEG * (MAX_DEG / 32) + i * (MAX_DEG / 32) + number] |= (1 << bit);
+                    inducedSubgraph[blockIdx.x * maxDeg * (maxDeg / 32) + i * (maxDeg / 32) + number] |= (1 << bit);
                 }
             }
         }
@@ -85,8 +85,8 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
 
         for (int i = firstNeighbourIncl; i < lastNeighbourExcl; ++i) {
             // i-ty sąsiad trafia na stos grupy i % GROUPS_PER_BLOCK na pozycję i / GROUPS_PER_BLOCK
-            stackVertex[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + (i % GROUPS_PER_BLOCK) * MAX_STACK + (i / GROUPS_PER_BLOCK)] = i;
-            stackDepth[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + (i % GROUPS_PER_BLOCK) * MAX_STACK + (i / GROUPS_PER_BLOCK)] = 1;
+            stackVertex[blockIdx.x * GROUPS_PER_BLOCK * maxStackSize + (i % GROUPS_PER_BLOCK) * maxStackSize + (i / GROUPS_PER_BLOCK)] = i;
+            stackDepth[blockIdx.x * GROUPS_PER_BLOCK * maxStackSize + (i % GROUPS_PER_BLOCK) * maxStackSize + (i / GROUPS_PER_BLOCK)] = 1;
         }
 
         int codePart = codeSize / GROUP_SIZE;
@@ -101,19 +101,19 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
 
         // Więcej jednynek niż graphSize. Czy to nie przeszkadza?
         for (int i = firstIntersectionIncl; i < lastIntersectionExcl; ++i) {
-            intersect[blockIdx.x * GROUPS_PER_BLOCK * MAX_DEPTH * (MAX_DEG / 32) + groupId * MAX_DEPTH * (MAX_DEG / 32) + 0 * (MAX_DEG / 32) + i] = ~0;
+            intersect[blockIdx.x * GROUPS_PER_BLOCK * MAX_DEPTH * (maxDeg / 32) + groupId * MAX_DEPTH * (maxDeg / 32) + 0 * (maxDeg / 32) + i] = ~0;
         }
 
         stackTop = (graphSize / GROUPS_PER_BLOCK) + (graphSize % GROUPS_PER_BLOCK > groupId ? 1 : 0) - 1;
 
         if (threadIdx.x == 0) {
-            cliques[0 * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId]++;
-            cliques[0 * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] %= MOD;            
+            cliques[0 * gridDim.x * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId]++;
+            cliques[0 * gridDim.x * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] %= MOD;
         }
         if (threadInGroup == 0) {
             maxStackTop[groupId] = stackTop;
-            cliques[1 * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] += (graphSize / GROUPS_PER_BLOCK) + (graphSize % GROUPS_PER_BLOCK > groupId ? 1 : 0); // Odpowiada wszystkim tym wrzuconym na stos wierzchołkom
-            cliques[1 * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] %= MOD;
+            cliques[1 * gridDim.x * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] += (graphSize / GROUPS_PER_BLOCK) + (graphSize % GROUPS_PER_BLOCK > groupId ? 1 : 0); // Odpowiada wszystkim tym wrzuconym na stos wierzchołkom
+            cliques[1 * gridDim.x * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] %= MOD;
         }
         __syncthreads();
 
@@ -127,14 +127,14 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
         while(maxStackTop[groupId] >= 0) {
 
             if (stackTop >= 0) {
-                uint u = stackVertex[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + stackTop];
-                int depth = stackDepth[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + stackTop];
+                uint u = stackVertex[blockIdx.x * GROUPS_PER_BLOCK * maxStackSize + groupId * maxStackSize + stackTop];
+                int depth = stackDepth[blockIdx.x * GROUPS_PER_BLOCK * maxStackSize + groupId * maxStackSize + stackTop];
 
                 int children = 0;
                 for (int i = firstIntersectionIncl; i < lastIntersectionExcl; ++i) {
-                    intersect[blockIdx.x * GROUPS_PER_BLOCK * MAX_DEPTH * (MAX_DEG / 32) + groupId * MAX_DEPTH * (MAX_DEG / 32) + depth * (MAX_DEG / 32) + i] = intersect[blockIdx.x * GROUPS_PER_BLOCK * MAX_DEPTH * (MAX_DEG / 32) + groupId * MAX_DEPTH * (MAX_DEG / 32) + (depth - 1) * (MAX_DEG / 32) + i] & inducedSubgraph[blockIdx.x * MAX_DEG * (MAX_DEG / 32) + u * (MAX_DEG / 32) + i];
+                    intersect[blockIdx.x * GROUPS_PER_BLOCK * MAX_DEPTH * (maxDeg / 32) + groupId * MAX_DEPTH * (maxDeg / 32) + depth * (maxDeg / 32) + i] = intersect[blockIdx.x * GROUPS_PER_BLOCK * MAX_DEPTH * (maxDeg / 32) + groupId * MAX_DEPTH * (maxDeg / 32) + (depth - 1) * (maxDeg / 32) + i] & inducedSubgraph[blockIdx.x * maxDeg * (maxDeg / 32) + u * (maxDeg / 32) + i];
                     for (int bit = 0; bit < 32; bit++) {
-                        children += ((intersect[blockIdx.x * GROUPS_PER_BLOCK * MAX_DEPTH * (MAX_DEG / 32) + groupId * MAX_DEPTH * (MAX_DEG / 32) + depth * (MAX_DEG / 32) + i] >> bit) & 1);
+                        children += ((intersect[blockIdx.x * GROUPS_PER_BLOCK * MAX_DEPTH * (maxDeg / 32) + groupId * MAX_DEPTH * (maxDeg / 32) + depth * (maxDeg / 32) + i] >> bit) & 1);
                     }
                 }
 
@@ -144,14 +144,14 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
                     int tmp = __shfl_sync(mask, pref, threadInGroup - i, GROUP_SIZE);
                     pref += (threadInGroup >= i ? tmp : 0);
                 }
-                
+
                 if (depth + 1 < K - 1) {
                     int pos = stackTop + pref - children;
                     for (int i = firstIntersectionIncl; i < lastIntersectionExcl; ++i) {
                         for (int bit = 0; bit < 32; bit++) {
-                            if ((intersect[blockIdx.x * GROUPS_PER_BLOCK * MAX_DEPTH * (MAX_DEG / 32) + groupId * MAX_DEPTH * (MAX_DEG / 32) + depth * (MAX_DEG / 32) + i] >> bit) & 1 == 1) {
-                                stackVertex[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + pos] = i * 32 + bit;
-                                stackDepth[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + pos] = depth + 1;
+                            if ((intersect[blockIdx.x * GROUPS_PER_BLOCK * MAX_DEPTH * (maxDeg / 32) + groupId * MAX_DEPTH * (maxDeg / 32) + depth * (maxDeg / 32) + i] >> bit) & 1 == 1) {
+                                stackVertex[blockIdx.x * GROUPS_PER_BLOCK * maxStackSize + groupId * maxStackSize + pos] = i * 32 + bit;
+                                stackDepth[blockIdx.x * GROUPS_PER_BLOCK * maxStackSize + groupId * maxStackSize + pos] = depth + 1;
                                 pos++;
                             }
                         }
@@ -159,12 +159,12 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
                 }
 
                 if (threadInGroup == GROUP_SIZE - 1) {
-                    cliques[(depth + 1) * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] += pref;
-                    cliques[(depth + 1) * NUM_BLOCKS * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] %= MOD;
+                    cliques[(depth + 1) * gridDim.x * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] += pref;
+                    cliques[(depth + 1) * gridDim.x * GROUPS_PER_BLOCK + blockIdx.x * GROUPS_PER_BLOCK + groupId] %= MOD;
                     stackTop = (depth + 1 < K - 1 ? stackTop + pref - 1 : stackTop - 1);
                 }
 
-                stackTop = __shfl_sync(mask, stackTop, groupId * GROUP_SIZE + (GROUP_SIZE - 1), GROUP_SIZE);            
+                stackTop = __shfl_sync(mask, stackTop, groupId * GROUP_SIZE + (GROUP_SIZE - 1), GROUP_SIZE);
             }
 
             if (threadInGroup == 0) {
@@ -184,7 +184,7 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
 }
 
 __global__ void reduce(int* cliques, int columns) {
-    __shared__ int row[NUM_BLOCKS * GROUPS_PER_BLOCK];
+    __shared__ int row[MAX_NUM_BLOCKS * GROUPS_PER_BLOCK];
 
     row[threadIdx.x] = cliques[blockIdx.x * columns + threadIdx.x];
 
@@ -207,15 +207,10 @@ int main(int argc, char* argv[]) {
 
     if (32 % GROUP_SIZE != 0) {
         std::cerr << "Warp size must be a multiple of GROUP_SIZE";
-        return 1;       
+        return 1;
     }
     if (BLOCK_SIZE % GROUP_SIZE != 0) {
         std::cerr << "BLOCK_SIZE must be a multiple of GROUP_SIZE";
-        return 1;  
-    }
-
-    if (MAX_DEG % 32 != 0) {
-        std::cerr << "MAX_DEG must be a multiple of 32";
         return 1;
     }
 
@@ -298,8 +293,9 @@ int main(int argc, char* argv[]) {
             std::cerr << "Error: each edge should appear at most once in the list\n";
             return 1;
         }
-    }    
+    }
 
+    int maxDeg = 0;
     // Wyznaczenie przedziału krawędzi wychodzących dla każdego wierzchołka
     std::vector<std::pair<int, int>> intervals(N, {0, 0});
     int l = 0, r = 1;
@@ -307,14 +303,19 @@ int main(int argc, char* argv[]) {
         while (r < edges.size() && edges[r].first == edges[l].first) {
             r++;
         }
-        if (r - l > MAX_DEG) {
-            std::cerr << "Error: maximal degree after orienting greater than MAX_DEG\n";
-            return 1;
-        }
+
         intervals[edges[l].first] = {l, r};
+        maxDeg = max(maxDeg, r - l);
         l = r;
         r = l + 1;
     }
+
+    maxDeg = ((maxDeg + 31) / 32) * 32; // Zaokrąglam w górę do najbliższej wielokrotności 32
+    if (maxDeg > MAX_DEG) {
+        std::cerr << "Error: maximal degree after orienting greater than MAX_DEG, may not fit in memory\n";
+        return 1;
+    }
+    int maxStackSize = maxDeg * maxDeg / 2;
 
     int cliques[K];
 
@@ -334,19 +335,22 @@ int main(int argc, char* argv[]) {
     unsigned int* devIntersect;
     uint* devStackVertex;
     int* devStackDepth;
-    HANDLE_ERROR(cudaMalloc((void**)&devIntersect, sizeof(unsigned int) * NUM_BLOCKS * GROUPS_PER_BLOCK * MAX_DEPTH * (MAX_DEG / 32)));
-    HANDLE_ERROR(cudaMalloc((void**)&devStackVertex, sizeof(uint) * MAX_STACK * NUM_BLOCKS * GROUPS_PER_BLOCK));
-    HANDLE_ERROR(cudaMalloc((void**)&devStackDepth, sizeof(int) * MAX_STACK * NUM_BLOCKS * GROUPS_PER_BLOCK));
+
+    int numBlocks = degree.size() < MAX_NUM_BLOCKS ? degree.size() : MAX_NUM_BLOCKS;
+
+    HANDLE_ERROR(cudaMalloc((void**)&devIntersect, sizeof(unsigned int) * numBlocks * GROUPS_PER_BLOCK * MAX_DEPTH * (maxDeg / 32)));
+    HANDLE_ERROR(cudaMalloc((void**)&devStackVertex, sizeof(uint) * maxStackSize * numBlocks * GROUPS_PER_BLOCK));
+    HANDLE_ERROR(cudaMalloc((void**)&devStackDepth, sizeof(int) * maxStackSize * numBlocks * GROUPS_PER_BLOCK));
 
     int* devCliques;
-    HANDLE_ERROR(cudaMalloc((void**)&devCliques, sizeof(int) * NUM_BLOCKS * GROUPS_PER_BLOCK * K));
-    HANDLE_ERROR(cudaMemset(devCliques, 0, sizeof(int) * NUM_BLOCKS * GROUPS_PER_BLOCK * K));
+    HANDLE_ERROR(cudaMalloc((void**)&devCliques, sizeof(int) * numBlocks * GROUPS_PER_BLOCK * K));
+    HANDLE_ERROR(cudaMemset(devCliques, 0, sizeof(int) * numBlocks * GROUPS_PER_BLOCK * K));
 
     unsigned int* devInducedSubrgaph;
-    HANDLE_ERROR(cudaMalloc((void**)&devInducedSubrgaph, sizeof(unsigned int) * NUM_BLOCKS * MAX_DEG * (MAX_DEG / 32)));
+    HANDLE_ERROR(cudaMalloc((void**)&devInducedSubrgaph, sizeof(unsigned int) * numBlocks * maxDeg * (maxDeg / 32)));
 
-    kcliques<<<NUM_BLOCKS, BLOCK_SIZE>>>(devEdges, devIntervals, N, devIntersect, devStackVertex, devStackDepth, devCliques, K, devInducedSubrgaph);
-    reduce<<<K, NUM_BLOCKS * GROUPS_PER_BLOCK>>>(devCliques, NUM_BLOCKS * GROUPS_PER_BLOCK);
+    kcliques<<<numBlocks, BLOCK_SIZE>>>(devEdges, devIntervals, N, devIntersect, devStackVertex, devStackDepth, devCliques, K, devInducedSubrgaph, maxDeg, maxStackSize);
+    reduce<<<K, numBlocks * GROUPS_PER_BLOCK>>>(devCliques, numBlocks * GROUPS_PER_BLOCK);
 
     HANDLE_ERROR(cudaEventRecord(stop, 0));
 	HANDLE_ERROR(cudaEventSynchronize(stop));
@@ -376,6 +380,8 @@ int main(int argc, char* argv[]) {
     }
     else {
         std::cerr << "Unable to open output file\n";
-        return 0;
+        return 1;
     }
+
+    return 0;
 }
