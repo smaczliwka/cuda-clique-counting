@@ -10,14 +10,14 @@
 #define MAX_STACK MAX_DEG * MAX_DEG / 2
 #define MAX_DEPTH K
 
-#define BLOCK_SIZE 64
-#define NUM_BLOCKS 256
-#define GROUP_SIZE 32
+#define BLOCK_SIZE 32
+#define NUM_BLOCKS 128
+#define GROUP_SIZE 8
 #define GROUPS_PER_BLOCK (int)(BLOCK_SIZE / GROUP_SIZE)
 
 #define MOD 1000000000
 
-#define FULL_MASK 0xffffffff
+// #define FULL_MASK 0xffffffff
 
 std::vector<std::pair<uint, uint>> edges;
 std::map<uint, uint> degree;
@@ -30,6 +30,15 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
     // TODO: Zakodować binarnie i zwiększyć MAX_DEG
     // __shared__ unsigned int inducedSubgraph[MAX_DEG * MAX_DEG / 32];
     // __shared__ uint neighbours[MAX_DEG];
+
+    uint mask = ((~(uint)0) >> (32 - GROUP_SIZE));
+    int groupInWarp = (threadIdx.x % 32) / GROUP_SIZE;
+    mask = mask << (groupInWarp * GROUP_SIZE);
+
+    // if (threadIdx.x == GROUP_SIZE - 1)
+    // for (int bit = 31; bit >= 0; bit--) {
+    //     printf("%d", (mask >> bit) & 1);   
+    // }
 
     __shared__ int maxStackTop[GROUPS_PER_BLOCK];
 
@@ -180,18 +189,18 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
             // }
 
             // __syncthreads();
-            // if (threadIdx.x == 0 && blockIdx.x == 0) {
-            //     printf("stackTop %d\n", stackTop);
+            // if (threadInGroup == 0) {
+            //     printf("groupId = %d: stackTop %d\n", groupId, stackTop);
             //     for (int i = 0; i <= stackTop; i++) {
-            //         printf("%d (%d)\n", stackVertex[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + i], stackDepth[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + i]);
+            //         printf("groupId = %d: %d (%d)\n", groupId, stackVertex[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + i], stackDepth[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + i]);
             //     }
             // }
 
             if (stackTop >= 0) {
                 uint u = stackVertex[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + stackTop];
                 int depth = stackDepth[blockIdx.x * GROUPS_PER_BLOCK * MAX_STACK + groupId * MAX_STACK + stackTop];
-                // if (threadIdx.x == 0 && blockIdx.x == 0) {
-                //     printf("vertex %d of depth %d\n", u, depth);
+                // if (threadInGroup == 0) {
+                //     printf("groupId = %d: vertex %d of depth %d\n", groupId, u, depth);
                 // }
 
                 int children = 0;
@@ -218,7 +227,7 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
                 //     pref += __shfl_up_sync(FULL_MASK, pref, i);
                 // }
                 for (int i = 1; i < GROUP_SIZE; i *= 2) {
-                    int tmp = __shfl_sync(FULL_MASK, pref, threadInGroup - i);
+                    int tmp = __shfl_sync(mask, pref, threadInGroup - i, GROUP_SIZE);
                     pref += (threadInGroup >= i ? tmp : 0);
                 }
                 // printf("threadInGroup %d, pref = %d\n", threadInGroup, pref);
@@ -253,7 +262,7 @@ __global__ void kcliques(std::pair<uint, uint>* edges, std::pair<int, int>* inte
                     // printf("new stack top %d\n", stackTop);
                 }
 
-                stackTop = __shfl_sync(FULL_MASK, stackTop, GROUP_SIZE - 1);            
+                stackTop = __shfl_sync(mask, stackTop, groupId * GROUP_SIZE + (GROUP_SIZE - 1), GROUP_SIZE);            
             }
 
             if (threadInGroup == 0) {
