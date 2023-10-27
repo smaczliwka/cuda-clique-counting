@@ -11,9 +11,9 @@
 #define MAX_DEG 1024
 #define MAX_DEPTH K
 
-#define BLOCK_SIZE 32
-#define MAX_NUM_BLOCKS 128
-#define GROUP_SIZE 8
+#define BLOCK_SIZE 64
+#define MAX_NUM_BLOCKS 64
+#define GROUP_SIZE 4
 #define GROUPS_PER_BLOCK (int)(BLOCK_SIZE / GROUP_SIZE)
 
 #define MOD 1000000000
