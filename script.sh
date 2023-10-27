@@ -8,7 +8,7 @@ else
     b=$(basename -- "$f")
     echo $b
     ./kcliques "$f" "${2}" temp.txt
-    diff temp.txt "${1}/output/$b"
+    diff -w temp.txt "${1}/output/$b"
   done
   rm temp.txt
 fi

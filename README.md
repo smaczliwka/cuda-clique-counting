@@ -16,11 +16,11 @@ The goal of this task is to implement _k-clique problem_ solution in CUDA. We ma
 ### Used resources
 
 *   Parallel K-clique Counting on GPUs. In 2022 International Conference on Supercomputing (ICS ’22), Mohammad Almasri, Izzat El Hajj, Rakesh Nagi, Jinjun Xiong, and Wen- mei Hwu. 2022. Available at: [https://arxiv.org/pdf/2104.13209.pdf](https://arxiv.org/pdf/2104.13209.pdf)
-    
+
 *   Video tutorial for the article above:
-    
+
     [https://www.youtube.com/watch?v=l-8s7Aiotvo](https://www.youtube.com/watch?v=l-8s7Aiotvo)
-    
+
 ### Compilation, input and output
 
 The program should be compiled using the following instructions performed in the main catalogue:
@@ -63,7 +63,6 @@ and the `graph_input` file content is:
     2 3
     1 3
     2 4
-    
 
 ![image](graph.png)
 
