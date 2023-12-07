@@ -33,7 +33,7 @@ The program should be then launched as follows:
 
 #### Input
 
-Graph input file consists of arbitrary number of lines describing graph _G_ in a form of edge list. Each line contains two space separated numbers, _a_ and _b_, 0 ≤ _a_, _b_ < 232. There is an undirected edge between _a_ and _b_ in the graph.
+Graph input file consists of arbitrary number of lines describing graph _G_ in a form of edge list. Each line contains two space separated numbers, _a_ and _b_, 0 ≤ _a_, _b_ < 2<sup>32</sup>. There is an undirected edge between _a_ and _b_ in the graph.
 
 Value of _k_ is provided as a command line argument.
 
